@@ -313,6 +313,38 @@ def calculate_quote(pickups, deliveries, num_machines, drive_time_minutes, max_d
 # PDF GENERATION
 # =============================================================================
 
+def sanitize_for_pdf(text):
+    """Remove or replace characters that cause PDF encoding issues"""
+    if not text:
+        return ""
+    
+    text = str(text)
+    
+    # Replace common problematic characters
+    replacements = {
+        '–': '-',  # en dash
+        '—': '-',  # em dash
+        ''': "'",  # smart quote
+        ''': "'",  # smart quote
+        '"': '"',  # smart quote
+        '"': '"',  # smart quote
+        '…': '...',  # ellipsis
+        '•': '*',  # bullet
+        '\u2022': '*',  # bullet
+        '\u2019': "'",  # right single quote
+        '\u201c': '"',  # left double quote
+        '\u201d': '"',  # right double quote
+        '\xa0': ' ',  # non-breaking space
+    }
+    
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    
+    # Remove any remaining non-ASCII characters
+    text = text.encode('ascii', 'ignore').decode('ascii')
+    
+    return text
+
 def generate_quote_pdf(data):
     """Generate professional quote PDF"""
     pdf = FPDF()
@@ -353,9 +385,9 @@ def generate_quote_pdf(data):
     pdf.set_font('Helvetica', '', 10)
     
     details = [
-        ('MR Number', data.get('mr_number', 'N/A')),
-        ('Requester', data.get('requester', 'N/A')),
-        ('Move Date', data.get('move_date', 'TBD')),
+        ('MR Number', sanitize_for_pdf(data.get('mr_number', 'N/A'))),
+        ('Requester', sanitize_for_pdf(data.get('requester', 'N/A'))),
+        ('Move Date', sanitize_for_pdf(data.get('move_date', 'TBD'))),
         ('Machines', str(data.get('num_machines', 1))),
     ]
     
@@ -363,7 +395,7 @@ def generate_quote_pdf(data):
         pdf.set_font('Helvetica', 'B', 10)
         pdf.cell(50, 7, f"{label}:")
         pdf.set_font('Helvetica', '', 10)
-        pdf.cell(0, 7, str(value) if value else 'N/A', ln=True)
+        pdf.cell(0, 7, sanitize_for_pdf(str(value)) if value else 'N/A', ln=True)
     
     # Pickups
     pdf.ln(3)
@@ -371,7 +403,7 @@ def generate_quote_pdf(data):
     pdf.cell(0, 7, 'PICKUP LOCATIONS:', ln=True)
     pdf.set_font('Helvetica', '', 9)
     for pickup in data.get('pickups', []):
-        pdf.cell(0, 6, f"  • {pickup}", ln=True)
+        pdf.cell(0, 6, f"  - {sanitize_for_pdf(pickup)}", ln=True)
     
     # Deliveries
     pdf.ln(3)
@@ -379,7 +411,7 @@ def generate_quote_pdf(data):
     pdf.cell(0, 7, 'DELIVERY LOCATIONS:', ln=True)
     pdf.set_font('Helvetica', '', 9)
     for delivery in data.get('deliveries', []):
-        pdf.cell(0, 6, f"  • {delivery}", ln=True)
+        pdf.cell(0, 6, f"  - {sanitize_for_pdf(delivery)}", ln=True)
     
     pdf.ln(5)
     
@@ -408,7 +440,7 @@ def generate_quote_pdf(data):
     
     pdf.ln(3)
     pdf.set_font('Helvetica', 'I', 9)
-    pdf.cell(0, 5, f"Formula: {data.get('formula', '')}", ln=True)
+    pdf.cell(0, 5, f"Formula: {sanitize_for_pdf(data.get('formula', ''))}", ln=True)
     
     # Other Notes
     if data.get('other_notes'):
@@ -416,7 +448,7 @@ def generate_quote_pdf(data):
         pdf.set_font('Helvetica', 'B', 10)
         pdf.cell(0, 7, 'NOTES:', ln=True)
         pdf.set_font('Helvetica', '', 9)
-        pdf.multi_cell(0, 5, data.get('other_notes', ''))
+        pdf.multi_cell(0, 5, sanitize_for_pdf(data.get('other_notes', '')))
     
     # Footer
     pdf.ln(10)
