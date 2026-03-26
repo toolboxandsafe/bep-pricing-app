@@ -1,0 +1,57 @@
+{
+  "maximus_hq": {
+    "name": "Maximus HQ",
+    "address": "3838 N Central Ave, Phoenix, AZ 85012",
+    "type": "origin",
+    "notes": "BEP headquarters - pickup point for deliveries"
+  },
+  "aspc_tucson_cimarron": {
+    "name": "ASPC Tucson - Cimarron",
+    "address": "1000 S Wilmont Rd, Tucson, AZ 85711",
+    "type": "prison",
+    "typical_price": 1000,
+    "notes": "Internal moves $500, delivery from Maximus $1000"
+  },
+  "aspc_tucson_manzanita": {
+    "name": "ASPC Tucson - Manzanita",
+    "address": "10000 S Wilmont Rd, Tucson, AZ 85756",
+    "type": "prison",
+    "typical_price": 940,
+    "notes": "Pickup to Phoenix typically $940"
+  },
+  "va_tucson": {
+    "name": "VA Administration Tucson",
+    "address": "3675 E Britannia Dr, Tucson, AZ 85706",
+    "type": "va_hospital",
+    "typical_price": 900,
+    "notes": "Internal moves $900 for 5 machines"
+  },
+  "tucson_pd": {
+    "name": "Tucson Police Department",
+    "address": "4410 S Park Avenue, Tucson, AZ 85714",
+    "type": "tucson_internal",
+    "typical_price": 850,
+    "notes": "On-site moves"
+  },
+  "valencia_po_tucson": {
+    "name": "Valencia Post Office",
+    "address": "Mission Valencia, Tucson, AZ",
+    "type": "tucson_delivery",
+    "typical_price": 900,
+    "notes": "Maximus delivery with 2 machines: $850-900"
+  },
+  "srccc_tucson": {
+    "name": "SRCCC (Southern Regional CCR Center)",
+    "address": "Tucson, AZ",
+    "type": "prison",
+    "typical_price": 1300,
+    "notes": "Combined with ASPC Tucson: $1300 for 2 machines"
+  },
+  "douglas_border": {
+    "name": "Douglas Border Area",
+    "address": "Douglas, AZ",
+    "type": "border",
+    "typical_price": 2650,
+    "notes": "Border jobs: $2,500-$2,800"
+  }
+}

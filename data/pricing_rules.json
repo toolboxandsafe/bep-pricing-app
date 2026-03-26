@@ -1,0 +1,69 @@
+{
+  "base_rate": {
+    "hourly_rate": 170,
+    "currency": "USD"
+  },
+  "minimums": {
+    "general": 220,
+    "tucson_delivery": 850,
+    "tucson_internal": 300
+  },
+  "distance_rules": {
+    "buffer_threshold_miles": 35,
+    "buffer_minutes": 20,
+    "maximus_address": "3838 N Central Ave, Phoenix, AZ 85012"
+  },
+  "rounding": {
+    "round_to": 25,
+    "direction": "up"
+  },
+  "location_types": {
+    "prison": {
+      "min_price": 900,
+      "max_price": 1200,
+      "typical": 1000,
+      "keywords": ["ASPC", "Cimarron", "Prison", "Correctional", "SRCCC", "Manzanita"]
+    },
+    "border": {
+      "min_price": 2500,
+      "max_price": 2800,
+      "typical": 2650,
+      "keywords": ["Douglas", "Nogales", "border"]
+    },
+    "tucson_internal": {
+      "min_price": 300,
+      "max_price": 500,
+      "typical": 400,
+      "keywords": ["Tucson"],
+      "condition": "same_facility_or_nearby"
+    },
+    "tucson_delivery": {
+      "min_price": 850,
+      "max_price": 1000,
+      "typical": 850,
+      "keywords": ["Tucson"],
+      "condition": "from_maximus"
+    },
+    "far_scottsdale": {
+      "bump_min": 40,
+      "bump_max": 80,
+      "keywords": ["Scottsdale"],
+      "condition": "far_north"
+    },
+    "va_hospital": {
+      "typical": 900,
+      "keywords": ["V.A.", "VA ", "Veterans"]
+    }
+  },
+  "multi_machine_rules": {
+    "same_trip_adjustment": {
+      "min": 50,
+      "max": 100,
+      "note": "Add $50-100 for additional machines on same trip, NOT 2x price"
+    }
+  },
+  "adjustments": {
+    "common_ryan_adjustment": 50,
+    "note": "Ryan most commonly adjusts quotes by +$50"
+  }
+}
