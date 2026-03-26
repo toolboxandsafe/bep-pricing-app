@@ -1,15 +1,18 @@
 """
 BEP Pricing Calculator - Streamlit Web App
 Tool Box & Safe Moving - Vending Machine Move Pricing
+Replicates Email-to-Trello Workflow
 """
 
 import streamlit as st
 import json
 import math
+import re
 from datetime import datetime
 import pandas as pd
 from io import BytesIO
 from fpdf import FPDF
+import requests
 
 # Page config
 st.set_page_config(
@@ -36,244 +39,205 @@ def load_locations():
 rules = load_pricing_rules()
 locations = load_locations()
 
+# Constants
+HQ_ADDRESS = "Gilbert, AZ 85295"
+HOURLY_RATE = 170
+BUFFER_THRESHOLD_MILES = 35
+BUFFER_MINUTES = 20
+JOB_TIME_PER_MACHINE = 30  # minutes
+
 # =============================================================================
-# EXCEL PARSING FUNCTIONS
+# EXCEL PARSING - BEP REQUEST TAB
 # =============================================================================
 
 def parse_bep_excel(uploaded_file):
-    """Parse BEP Move Request Excel file and extract all relevant data"""
+    """Parse BEP Move Request Excel file - extracts from REQUEST tab"""
     try:
-        # Read the Excel file
-        df = pd.read_excel(uploaded_file, header=None)
+        # Try to read REQUEST tab specifically
+        try:
+            df = pd.read_excel(uploaded_file, sheet_name='REQUEST', header=None)
+        except:
+            # Fallback to first sheet
+            df = pd.read_excel(uploaded_file, header=None)
         
-        extracted_data = {
+        extracted = {
             "success": True,
             "requester": None,
             "mr_number": None,
-            "pickup_address": None,
-            "delivery_address": None,
-            "num_machines": 1,
-            "machine_type": None,
+            "pickups": [],
+            "deliveries": [],
+            "num_machines": 0,
+            "machine_types": [],
             "move_date": None,
-            "contact_name": None,
-            "contact_phone": None,
-            "notes": None,
-            "raw_data": {}
+            "other_notes": None,
+            "contacts": [],
+            "raw_text": ""
         }
         
-        # Search for key fields in the Excel
+        # Convert entire sheet to searchable text
+        all_text = []
+        current_section = None
+        
         for row_idx, row in df.iterrows():
+            row_text = " | ".join([str(c) for c in row if pd.notna(c)])
+            all_text.append(row_text)
+            
             for col_idx, cell in enumerate(row):
                 if pd.notna(cell):
-                    cell_str = str(cell).strip().upper()
-                    cell_value = str(cell).strip()
+                    cell_str = str(cell).strip()
+                    cell_upper = cell_str.upper()
                     
-                    # Get the value to the right or below
-                    next_col_value = None
-                    next_row_value = None
+                    # Get adjacent cell values
+                    next_col = str(row.iloc[col_idx + 1]).strip() if col_idx + 1 < len(row) and pd.notna(row.iloc[col_idx + 1]) else None
+                    prev_row = str(df.iloc[row_idx - 1, col_idx]).strip() if row_idx > 0 and col_idx < len(df.iloc[row_idx - 1]) and pd.notna(df.iloc[row_idx - 1, col_idx]) else None
                     
-                    if col_idx + 1 < len(row) and pd.notna(row.iloc[col_idx + 1]):
-                        next_col_value = str(row.iloc[col_idx + 1]).strip()
-                    if row_idx + 1 < len(df) and col_idx < len(df.iloc[row_idx + 1]) and pd.notna(df.iloc[row_idx + 1, col_idx]):
-                        next_row_value = str(df.iloc[row_idx + 1, col_idx]).strip()
+                    # MR Number (format: 1XX-XX/XX)
+                    if re.match(r'1\w{2}-\d{2}/\d{2}', cell_str):
+                        extracted["mr_number"] = cell_str
                     
-                    # Requester Name - typically Row 47 or labeled
-                    if "REQUESTER" in cell_str and "NAME" in cell_str:
-                        # Value is above this cell (Row 47)
-                        if row_idx > 0 and pd.notna(df.iloc[row_idx - 1, col_idx]):
-                            extracted_data["requester"] = str(df.iloc[row_idx - 1, col_idx]).strip()
+                    # Requester Name - check row 47 (index 46)
+                    if row_idx == 46 and col_idx < 3:
+                        if cell_str and not any(x in cell_upper for x in ['REQUESTER', 'NAME', 'DATE', 'SIGNATURE']):
+                            extracted["requester"] = cell_str
                     
-                    # MR Number
-                    if "MR" in cell_str and any(c.isdigit() for c in cell_value):
-                        extracted_data["mr_number"] = cell_value
-                    if cell_str.startswith("1") and "-" in cell_value and "/" in cell_value:
-                        extracted_data["mr_number"] = cell_value
+                    # Section detection
+                    if "PICK UP" in cell_upper or "PICKUP" in cell_upper:
+                        current_section = "pickup"
+                    elif "DELIVER" in cell_upper or "DELIVERY" in cell_upper:
+                        current_section = "delivery"
+                    elif "OTHER NOTE" in cell_upper or "SPECIAL" in cell_upper:
+                        current_section = "notes"
                     
-                    # Pickup/From Address
-                    if any(keyword in cell_str for keyword in ["PICKUP", "FROM", "ORIGIN", "CURRENT LOCATION"]):
-                        if next_col_value:
-                            extracted_data["pickup_address"] = next_col_value
-                        elif next_row_value:
-                            extracted_data["pickup_address"] = next_row_value
+                    # Address extraction (look for address patterns)
+                    address_indicators = ['AVE', 'STREET', 'ST.', 'ST ', 'BLVD', 'ROAD', 'RD', 'DRIVE', 'DR.', 'LANE', 'WAY', 'PHOENIX', 'PHX', 'TUCSON', 'MESA', 'TEMPE', 'GILBERT', 'SCOTTSDALE', 'CHANDLER']
+                    if any(ind in cell_upper for ind in address_indicators):
+                        # This looks like an address
+                        if current_section == "pickup" and cell_str not in extracted["pickups"]:
+                            extracted["pickups"].append(cell_str)
+                        elif current_section == "delivery" and cell_str not in extracted["deliveries"]:
+                            extracted["deliveries"].append(cell_str)
                     
-                    # Delivery/To Address
-                    if any(keyword in cell_str for keyword in ["DELIVER", "TO ADDRESS", "DESTINATION", "NEW LOCATION"]):
-                        if next_col_value:
-                            extracted_data["delivery_address"] = next_col_value
-                        elif next_row_value:
-                            extracted_data["delivery_address"] = next_row_value
+                    # Site/Location names (often have facility info)
+                    if "SITE" in cell_upper or "LOCATION" in cell_upper or "FACILITY" in cell_upper:
+                        if next_col:
+                            if current_section == "pickup" and next_col not in extracted["pickups"]:
+                                extracted["pickups"].append(next_col)
+                            elif current_section == "delivery" and next_col not in extracted["deliveries"]:
+                                extracted["deliveries"].append(next_col)
                     
-                    # Number of machines
-                    if any(keyword in cell_str for keyword in ["QTY", "QUANTITY", "# OF", "NUMBER OF", "MACHINES"]):
-                        if next_col_value and next_col_value.isdigit():
-                            extracted_data["num_machines"] = int(next_col_value)
-                        elif next_row_value and next_row_value.isdigit():
-                            extracted_data["num_machines"] = int(next_row_value)
+                    # Machine type detection
+                    machine_keywords = ['VENDING', 'MACHINE', 'KIOSK', 'ATM', 'SNACK', 'SODA', 'COMBO', 'CHANGER', 'FROZEN']
+                    if any(kw in cell_upper for kw in machine_keywords):
+                        if cell_str not in extracted["machine_types"]:
+                            extracted["machine_types"].append(cell_str)
                     
-                    # Machine type
-                    if any(keyword in cell_str for keyword in ["MACHINE TYPE", "EQUIPMENT", "TYPE"]):
-                        if next_col_value:
-                            extracted_data["machine_type"] = next_col_value
-                    
-                    # Move date
-                    if any(keyword in cell_str for keyword in ["DATE", "MOVE DATE", "SCHEDULED"]):
-                        if next_col_value:
-                            extracted_data["move_date"] = next_col_value
+                    # Other Notes
+                    if current_section == "notes" and cell_str and len(cell_str) > 10:
+                        extracted["other_notes"] = cell_str
                     
                     # Contact info
-                    if "CONTACT" in cell_str and "NAME" in cell_str:
-                        if next_col_value:
-                            extracted_data["contact_name"] = next_col_value
-                    if "PHONE" in cell_str or "TEL" in cell_str:
-                        if next_col_value:
-                            extracted_data["contact_phone"] = next_col_value
+                    if "CONTACT" in cell_upper or "PHONE" in cell_upper:
+                        if next_col:
+                            extracted["contacts"].append(next_col)
                     
-                    # Notes/Comments
-                    if any(keyword in cell_str for keyword in ["NOTE", "COMMENT", "SPECIAL", "INSTRUCTION"]):
-                        if next_col_value:
-                            extracted_data["notes"] = next_col_value
-                    
-                    # Look for addresses in cells (contain street indicators)
-                    if any(indicator in cell_str for indicator in ["AVE", "STREET", "ST.", "BLVD", "ROAD", "RD.", "DRIVE", "DR.", "LANE", "LN."]):
-                        # This might be an address
-                        if not extracted_data["pickup_address"]:
-                            extracted_data["raw_data"]["possible_address_1"] = cell_value
-                        elif not extracted_data["delivery_address"]:
-                            extracted_data["raw_data"]["possible_address_2"] = cell_value
+                    # Date
+                    if "DATE" in cell_upper and next_col:
+                        try:
+                            extracted["move_date"] = next_col
+                        except:
+                            pass
         
-        # Try to extract requester from Row 47 specifically (0-indexed = row 46)
-        if not extracted_data["requester"] and len(df) > 46:
-            for col_idx in range(min(5, len(df.columns))):
-                if pd.notna(df.iloc[46, col_idx]):
-                    val = str(df.iloc[46, col_idx]).strip()
-                    if val and not val.upper().startswith(("REQUESTER", "NAME", "DATE")):
-                        extracted_data["requester"] = val
-                        break
+        # Count machines based on pickup/delivery pairs
+        extracted["num_machines"] = max(len(extracted["pickups"]), len(extracted["deliveries"]), 1)
         
-        # Store raw preview
-        extracted_data["raw_data"]["preview"] = df.head(20).to_dict()
+        # Store raw text for display
+        extracted["raw_text"] = "\n".join(all_text)
         
-        return extracted_data
+        # Try alternate requester extraction if not found
+        if not extracted["requester"]:
+            # Look for name patterns in first few rows
+            for row_idx in range(min(5, len(df))):
+                for col_idx in range(min(5, len(df.columns))):
+                    if pd.notna(df.iloc[row_idx, col_idx]):
+                        val = str(df.iloc[row_idx, col_idx]).strip()
+                        # Look for name-like patterns (First Last)
+                        if re.match(r'^[A-Z][a-z]+ [A-Z][a-z]+$', val):
+                            extracted["requester"] = val
+                            break
+        
+        return extracted
         
     except Exception as e:
-        return {
-            "success": False,
-            "error": str(e)
-        }
+        return {"success": False, "error": str(e)}
 
 # =============================================================================
 # PRICING FUNCTIONS
 # =============================================================================
 
-def round_up_to_nearest(value, nearest):
-    """Round up to nearest value (e.g., nearest $25)"""
-    return math.ceil(value / nearest) * nearest
-
-def detect_location_type(address):
-    """Detect location type from address keywords"""
-    if not address:
-        return "standard", None
+def calculate_quote(pickups, deliveries, num_machines, drive_time_minutes, max_distance_miles=None):
+    """Calculate BEP quote following the workflow rules"""
     
-    address_upper = address.upper()
+    # Drive time (round trip calculation already included if user provides one-way)
+    # The workflow calculates: HQ → Pickups → Deliveries → HQ
+    # User provides total drive time for the route
     
-    for loc_type, config in rules["location_types"].items():
-        keywords = config.get("keywords", [])
-        for keyword in keywords:
-            if keyword.upper() in address_upper:
-                return loc_type, config
+    total_drive_time = drive_time_minutes
     
-    return "standard", None
-
-def calculate_price(pickup_address, delivery_address, num_machines, drive_time_minutes, is_internal_move=False):
-    """Calculate BEP move price based on rules"""
+    # Job time: 30 minutes per machine
+    job_time = JOB_TIME_PER_MACHINE * num_machines
     
-    hourly_rate = rules["base_rate"]["hourly_rate"]
+    # Buffer: 20 minutes if max distance > 35 miles
+    buffer_time = 0
+    if max_distance_miles and max_distance_miles > BUFFER_THRESHOLD_MILES:
+        buffer_time = BUFFER_MINUTES
     
-    # Detect location types
-    pickup_type, pickup_config = detect_location_type(pickup_address)
-    delivery_type, delivery_config = detect_location_type(delivery_address)
+    # Total time
+    total_minutes = total_drive_time + job_time + buffer_time
+    total_hours = total_minutes / 60
     
-    # Determine primary location type
-    primary_type = delivery_type if delivery_type != "standard" else pickup_type
-    primary_config = delivery_config if delivery_config else pickup_config
+    # Base price
+    base_price = total_hours * HOURLY_RATE
     
-    # Base calculation: drive time * 2 (round trip) * hourly rate
-    base_hours = (drive_time_minutes * 2) / 60
-    base_price = base_hours * hourly_rate
+    # Apply minimums
+    min_price = 220  # General minimum
     
-    # Apply buffer if distance > threshold
-    estimated_miles = drive_time_minutes / 1.5
+    # Check for Tucson locations
+    all_locations = pickups + deliveries
+    is_tucson = any('TUCSON' in loc.upper() for loc in all_locations if loc)
+    if is_tucson:
+        min_price = 850
     
-    if estimated_miles > rules["distance_rules"]["buffer_threshold_miles"]:
-        buffer_minutes = rules["distance_rules"]["buffer_minutes"]
-        buffer_price = (buffer_minutes / 60) * hourly_rate
-        base_price += buffer_price
-    
-    # Apply location-specific rules
-    min_price = rules["minimums"]["general"]
-    
-    if primary_type == "tucson_internal" and is_internal_move:
-        min_price = rules["minimums"]["tucson_internal"]
-        if primary_config:
-            base_price = max(base_price, primary_config.get("typical", 400))
-            
-    elif primary_type == "tucson_delivery" or (delivery_address and "TUCSON" in delivery_address.upper() and not is_internal_move):
-        min_price = rules["minimums"]["tucson_delivery"]
-        
-    elif primary_type == "prison" and primary_config:
-        base_price = max(base_price, primary_config.get("typical", 1000))
-        min_price = primary_config.get("min_price", 900)
-        
-    elif primary_type == "border" and primary_config:
-        base_price = max(base_price, primary_config.get("typical", 2650))
-        min_price = primary_config.get("min_price", 2500)
-        
-    elif primary_type == "far_scottsdale" and primary_config:
-        bump = (primary_config.get("bump_min", 40) + primary_config.get("bump_max", 80)) / 2
-        base_price += bump
-    
-    # Apply multi-machine adjustment
-    if num_machines > 1:
-        multi_config = rules["multi_machine_rules"]["same_trip_adjustment"]
-        additional_machines = num_machines - 1
-        adjustment_per = (multi_config["min"] + multi_config["max"]) / 2
-        base_price += additional_machines * adjustment_per
+    # Check for prison
+    is_prison = any(kw in str(all_locations).upper() for kw in ['ASPC', 'PRISON', 'CORRECTIONAL', 'CIMARRON'])
+    if is_prison:
+        min_price = max(min_price, 900)
     
     # Apply minimum
     final_price = max(base_price, min_price)
     
-    # Round up to nearest $25
-    final_price = round_up_to_nearest(final_price, rules["rounding"]["round_to"])
+    # Round UP to nearest $25
+    final_price = math.ceil(final_price / 25) * 25
     
     return {
+        "drive_time": total_drive_time,
+        "job_time": job_time,
+        "buffer_time": buffer_time,
+        "total_minutes": total_minutes,
+        "total_hours": round(total_hours, 2),
         "base_price": round(base_price, 2),
         "min_price": min_price,
-        "final_price": final_price,
-        "location_type": primary_type,
-        "estimated_miles": round(estimated_miles, 1),
-        "num_machines": num_machines,
-        "confidence": calculate_confidence(primary_type, estimated_miles, is_internal_move)
+        "final_price": int(final_price),
+        "is_tucson": is_tucson,
+        "is_prison": is_prison,
+        "formula": f"({total_drive_time} + {job_time} + {buffer_time}) ÷ 60 × ${HOURLY_RATE} = ${base_price:.2f}"
     }
-
-def calculate_confidence(location_type, estimated_miles, is_internal_move):
-    """Calculate confidence score for the quote"""
-    if location_type in ["prison", "border"]:
-        return "HIGH" if estimated_miles < 150 else "MEDIUM"
-    elif location_type in ["tucson_internal", "tucson_delivery"]:
-        return "HIGH" if is_internal_move else "MEDIUM"
-    elif location_type == "standard" and estimated_miles < 50:
-        return "HIGH"
-    elif estimated_miles > 100:
-        return "LOW"
-    else:
-        return "MEDIUM"
 
 # =============================================================================
 # PDF GENERATION
 # =============================================================================
 
-def generate_quote_pdf(quote_data):
-    """Generate a professional quote PDF"""
+def generate_quote_pdf(data):
+    """Generate professional quote PDF"""
     pdf = FPDF()
     pdf.add_page()
     
@@ -285,51 +249,64 @@ def generate_quote_pdf(quote_data):
     pdf.set_font('Helvetica', '', 12)
     pdf.set_text_color(100, 100, 100)
     pdf.cell(0, 8, 'BEP Vending Machine Move Quote', ln=True, align='C')
-    pdf.cell(0, 6, 'Phone: (602) 935-4209 | Email: ryan@curlvending.com', ln=True, align='C')
+    pdf.cell(0, 6, 'Phone: (602) 935-4209', ln=True, align='C')
     
     pdf.ln(10)
     
-    # Quote info box
-    pdf.set_fill_color(240, 240, 240)
-    pdf.set_text_color(0, 0, 0)
-    pdf.set_font('Helvetica', 'B', 14)
-    pdf.cell(0, 10, f"QUOTE: ${quote_data.get('final_price', 0):,.0f}", ln=True, align='C', fill=True)
+    # Quote amount
+    pdf.set_fill_color(34, 139, 34)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font('Helvetica', 'B', 20)
+    pdf.cell(0, 15, f"  QUOTE: ${data.get('final_price', 0):,}", ln=True, fill=True)
     
     pdf.ln(5)
-    
-    # Date
+    pdf.set_text_color(0, 0, 0)
     pdf.set_font('Helvetica', '', 10)
     pdf.cell(0, 6, f"Date: {datetime.now().strftime('%B %d, %Y')}", ln=True, align='R')
     
     pdf.ln(5)
     
-    # Move Details Section
+    # Move Details
     pdf.set_font('Helvetica', 'B', 12)
     pdf.set_fill_color(0, 102, 204)
     pdf.set_text_color(255, 255, 255)
     pdf.cell(0, 8, '  MOVE DETAILS', ln=True, fill=True)
     
     pdf.set_text_color(0, 0, 0)
-    pdf.set_font('Helvetica', '', 11)
+    pdf.set_font('Helvetica', '', 10)
     
     details = [
-        ('MR Number', quote_data.get('mr_number', 'N/A')),
-        ('Requester', quote_data.get('requester', 'N/A')),
-        ('Pickup Location', quote_data.get('pickup_address', 'N/A')),
-        ('Delivery Location', quote_data.get('delivery_address', 'N/A')),
-        ('Number of Machines', str(quote_data.get('num_machines', 1))),
-        ('Move Date', quote_data.get('move_date', 'TBD')),
+        ('MR Number', data.get('mr_number', 'N/A')),
+        ('Requester', data.get('requester', 'N/A')),
+        ('Move Date', data.get('move_date', 'TBD')),
+        ('Machines', str(data.get('num_machines', 1))),
     ]
     
     for label, value in details:
         pdf.set_font('Helvetica', 'B', 10)
-        pdf.cell(60, 7, f"{label}:")
+        pdf.cell(50, 7, f"{label}:")
         pdf.set_font('Helvetica', '', 10)
         pdf.cell(0, 7, str(value) if value else 'N/A', ln=True)
     
+    # Pickups
+    pdf.ln(3)
+    pdf.set_font('Helvetica', 'B', 10)
+    pdf.cell(0, 7, 'PICKUP LOCATIONS:', ln=True)
+    pdf.set_font('Helvetica', '', 9)
+    for pickup in data.get('pickups', []):
+        pdf.cell(0, 6, f"  • {pickup}", ln=True)
+    
+    # Deliveries
+    pdf.ln(3)
+    pdf.set_font('Helvetica', 'B', 10)
+    pdf.cell(0, 7, 'DELIVERY LOCATIONS:', ln=True)
+    pdf.set_font('Helvetica', '', 9)
+    for delivery in data.get('deliveries', []):
+        pdf.cell(0, 6, f"  • {delivery}", ln=True)
+    
     pdf.ln(5)
     
-    # Pricing Section
+    # Pricing breakdown
     pdf.set_font('Helvetica', 'B', 12)
     pdf.set_fill_color(0, 102, 204)
     pdf.set_text_color(255, 255, 255)
@@ -339,338 +316,318 @@ def generate_quote_pdf(quote_data):
     pdf.set_font('Helvetica', '', 10)
     
     pricing = [
-        ('Drive Time (one-way)', f"{quote_data.get('drive_time', 60)} minutes"),
-        ('Estimated Distance', f"{quote_data.get('estimated_miles', 0)} miles"),
-        ('Location Type', quote_data.get('location_type', 'standard').replace('_', ' ').title()),
-        ('Minimum Price', f"${quote_data.get('min_price', 220)}"),
-        ('Confidence Level', quote_data.get('confidence', 'MEDIUM')),
+        ('Drive Time', f"{data.get('drive_time', 0)} min"),
+        ('Job Time', f"{data.get('job_time', 0)} min ({data.get('num_machines', 1)} machines × 30 min)"),
+        ('Buffer', f"{data.get('buffer_time', 0)} min"),
+        ('Total Time', f"{data.get('total_hours', 0)} hours"),
+        ('Rate', f"${HOURLY_RATE}/hour"),
+        ('Minimum Applied', f"${data.get('min_price', 220)}"),
     ]
     
     for label, value in pricing:
         pdf.set_font('Helvetica', '', 10)
-        pdf.cell(60, 7, f"{label}:")
-        pdf.cell(0, 7, str(value), ln=True)
+        pdf.cell(50, 6, f"{label}:")
+        pdf.cell(0, 6, str(value), ln=True)
     
-    pdf.ln(5)
+    pdf.ln(3)
+    pdf.set_font('Helvetica', 'I', 9)
+    pdf.cell(0, 5, f"Formula: {data.get('formula', '')}", ln=True)
     
-    # Total
-    pdf.set_font('Helvetica', 'B', 16)
-    pdf.set_fill_color(34, 139, 34)
-    pdf.set_text_color(255, 255, 255)
-    pdf.cell(0, 12, f"  TOTAL QUOTE: ${quote_data.get('final_price', 0):,.0f}", ln=True, fill=True)
-    
-    pdf.ln(10)
-    
-    # Notes
-    if quote_data.get('notes'):
-        pdf.set_text_color(0, 0, 0)
-        pdf.set_font('Helvetica', 'B', 10)
-        pdf.cell(0, 6, 'Notes:', ln=True)
-        pdf.set_font('Helvetica', '', 10)
-        pdf.multi_cell(0, 5, quote_data.get('notes', ''))
+    # Other Notes
+    if data.get('other_notes'):
         pdf.ln(5)
+        pdf.set_font('Helvetica', 'B', 10)
+        pdf.cell(0, 7, 'NOTES:', ln=True)
+        pdf.set_font('Helvetica', '', 9)
+        pdf.multi_cell(0, 5, data.get('other_notes', ''))
     
     # Footer
     pdf.ln(10)
-    pdf.set_font('Helvetica', 'I', 9)
+    pdf.set_font('Helvetica', 'I', 8)
     pdf.set_text_color(128, 128, 128)
-    pdf.cell(0, 5, 'This quote is valid for 30 days from the date above.', ln=True, align='C')
-    pdf.cell(0, 5, 'Pricing based on standard business hours. Additional charges may apply for stairs or special requirements.', ln=True, align='C')
+    pdf.cell(0, 5, 'Quote valid for 30 days. Additional charges may apply for stairs.', ln=True, align='C')
     
-    # Return PDF as bytes
     return pdf.output()
+
+# =============================================================================
+# TRELLO INTEGRATION
+# =============================================================================
+
+def create_trello_card(data, api_key, api_token, list_id):
+    """Create Trello card with quote data"""
+    
+    # Build title: Requester - MR# - $Quote
+    title = f"{data.get('requester', 'Unknown')} - {data.get('mr_number', 'BEP')} - ${data.get('final_price', 0)}"
+    
+    # Build description
+    desc = f"""## Move Request Quote
+
+**MR Number:** {data.get('mr_number', 'N/A')}
+**Requester:** {data.get('requester', 'N/A')}
+**Move Date:** {data.get('move_date', 'TBD')}
+**Machines:** {data.get('num_machines', 1)}
+
+---
+
+### 📍 PICKUP LOCATIONS
+{chr(10).join(['• ' + p for p in data.get('pickups', [])])}
+
+### 📍 DELIVERY LOCATIONS
+{chr(10).join(['• ' + d for d in data.get('deliveries', [])])}
+
+---
+
+### 💰 QUOTE: ${data.get('final_price', 0):,}
+
+**Breakdown:**
+- Drive Time: {data.get('drive_time', 0)} min
+- Job Time: {data.get('job_time', 0)} min
+- Buffer: {data.get('buffer_time', 0)} min
+- Total Hours: {data.get('total_hours', 0)}
+- Rate: ${HOURLY_RATE}/hour
+
+**Formula:** {data.get('formula', '')}
+
+---
+
+### 📝 OTHER NOTES
+{data.get('other_notes', 'None')}
+
+---
+@luissaravia2
+"""
+    
+    url = f"https://api.trello.com/1/cards"
+    params = {
+        'key': api_key,
+        'token': api_token,
+        'idList': list_id,
+        'name': title,
+        'desc': desc,
+        'pos': 'top'
+    }
+    
+    response = requests.post(url, params=params)
+    return response.json() if response.status_code == 200 else None
 
 # =============================================================================
 # STREAMLIT UI
 # =============================================================================
 
 st.title("🚚 BEP Pricing Calculator")
-st.markdown("**Tool Box & Safe Moving** - Vending Machine Move Pricing System")
+st.markdown("**Tool Box & Safe Moving** - Upload Excel → Auto-Calculate → Generate Quote")
 
-# Sidebar with rules summary
+# Sidebar
 with st.sidebar:
     st.header("📋 Pricing Rules")
     st.markdown(f"""
-    **Base Rate:** ${rules['base_rate']['hourly_rate']}/hour
+    **Rate:** ${HOURLY_RATE}/hour
+    **Job Time:** 30 min/machine
+    **Buffer:** +20 min if >35 miles
     
     **Minimums:**
-    - General: ${rules['minimums']['general']}
-    - Tucson Delivery: ${rules['minimums']['tucson_delivery']}
-    - Tucson Internal: ${rules['minimums']['tucson_internal']}
+    - General: $220
+    - Tucson: $850
+    - Prison: $900+
     
-    **Distance Buffer:**
-    - Threshold: {rules['distance_rules']['buffer_threshold_miles']} miles
-    - Buffer: +{rules['distance_rules']['buffer_minutes']} min
-    
-    **Rounding:** Up to ${rules['rounding']['round_to']}
+    **Rounding:** Up to $25
     """)
     
     st.divider()
     
-    st.markdown("""
-    **Location Premiums:**
-    - 🏛️ Prison: $900-$1,200
-    - 🌵 Border: $2,500-$2,800
-    - 🏥 VA Hospital: ~$900
-    """)
+    # Trello settings (collapsible)
+    with st.expander("🔧 Trello Settings"):
+        trello_key = st.text_input("API Key", type="password")
+        trello_token = st.text_input("API Token", type="password")
+        trello_list = st.text_input("List ID", value="699c9f9d6117bdcbb2d0e0aa")
 
-# Main content - tabs
-tab1, tab2, tab3, tab4 = st.tabs(["📤 Upload Sheet", "💰 Manual Calculator", "📍 Locations", "⚙️ Rules"])
+# Main content
+st.header("📤 Upload BEP Move Request")
 
-with tab1:
-    st.header("📤 Upload BEP Move Request Sheet")
-    st.markdown("Upload the Excel file and we'll extract all the data automatically!")
-    
-    uploaded_file = st.file_uploader(
-        "Drop your BEP Excel file here",
-        type=["xlsx", "xls"],
-        help="Upload the Move Request Excel file from BEP"
-    )
-    
-    if uploaded_file is not None:
-        with st.spinner("Parsing Excel file..."):
-            data = parse_bep_excel(uploaded_file)
-        
-        if data["success"]:
-            st.success("✅ File parsed successfully!")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.subheader("📋 Extracted Data")
-                
-                # Editable fields
-                requester = st.text_input("Requester Name", value=data.get("requester") or "")
-                mr_number = st.text_input("MR Number", value=data.get("mr_number") or "")
-                pickup = st.text_input("Pickup Address", value=data.get("pickup_address") or "")
-                delivery = st.text_input("Delivery Address", value=data.get("delivery_address") or "")
-                machines = st.number_input("Number of Machines", min_value=1, max_value=10, value=data.get("num_machines") or 1)
-                
-                if data.get("machine_type"):
-                    st.text_input("Machine Type", value=data.get("machine_type"), disabled=True)
-                if data.get("move_date"):
-                    st.text_input("Move Date", value=data.get("move_date"), disabled=True)
-                if data.get("contact_name"):
-                    st.text_input("Contact Name", value=data.get("contact_name"), disabled=True)
-                if data.get("notes"):
-                    st.text_area("Notes", value=data.get("notes"), disabled=True)
-            
-            with col2:
-                st.subheader("🕐 Drive Time & Calculate")
-                
-                drive_time = st.number_input(
-                    "One-Way Drive Time (minutes)",
-                    min_value=5,
-                    max_value=300,
-                    value=60,
-                    help="Enter the one-way drive time from Maximus to delivery"
-                )
-                
-                is_internal = st.checkbox(
-                    "Internal Move (same facility)",
-                    help="Check if moving within the same facility"
-                )
-                
-                # Quick presets
-                st.markdown("**Quick Presets:**")
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    if st.button("Phoenix (30 min)", key="p1"):
-                        drive_time = 30
-                    if st.button("Tucson (90 min)", key="p2"):
-                        drive_time = 90
-                with col_b:
-                    if st.button("Scottsdale (45 min)", key="p3"):
-                        drive_time = 45
-                    if st.button("Border (180 min)", key="p4"):
-                        drive_time = 180
-                
-                st.divider()
-                
-                if st.button("🧮 CALCULATE QUOTE", type="primary", use_container_width=True):
-                    if pickup and delivery:
-                        result = calculate_price(pickup, delivery, machines, drive_time, is_internal)
-                        
-                        st.success(f"### 💵 Quote: ${result['final_price']:,.0f}")
-                        
-                        confidence_emoji = {"HIGH": "🟢", "MEDIUM": "🟡", "LOW": "🔴"}
-                        st.markdown(f"**Confidence:** {confidence_emoji.get(result['confidence'], '⚪')} {result['confidence']}")
-                        st.markdown(f"**Location Type:** {result['location_type'].replace('_', ' ').title()}")
-                        
-                        # Store data for PDF generation
-                        quote_data = {
-                            "requester": requester,
-                            "mr_number": mr_number,
-                            "pickup_address": pickup,
-                            "delivery_address": delivery,
-                            "num_machines": machines,
-                            "drive_time": drive_time,
-                            "move_date": data.get("move_date", "TBD"),
-                            "notes": data.get("notes", ""),
-                            "final_price": result['final_price'],
-                            "min_price": result['min_price'],
-                            "estimated_miles": result['estimated_miles'],
-                            "location_type": result['location_type'],
-                            "confidence": result['confidence']
-                        }
-                        
-                        # Generate PDF
-                        pdf_bytes = generate_quote_pdf(quote_data)
-                        
-                        # Download button for PDF
-                        st.download_button(
-                            label="📄 Download Quote PDF",
-                            data=pdf_bytes,
-                            file_name=f"QUOTE_{mr_number or 'BEP'}_{datetime.now().strftime('%Y%m%d')}.pdf",
-                            mime="application/pdf",
-                            type="primary",
-                            use_container_width=True
-                        )
-                        
-                        with st.expander("📋 Full Breakdown"):
-                            st.markdown(f"""
-                            | Field | Value |
-                            |-------|-------|
-                            | Requester | {requester} |
-                            | MR Number | {mr_number} |
-                            | Pickup | {pickup} |
-                            | Delivery | {delivery} |
-                            | Machines | {machines} |
-                            | Drive Time | {drive_time} min |
-                            | Est. Miles | {result['estimated_miles']} |
-                            | Location Type | {result['location_type']} |
-                            | Minimum | ${result['min_price']} |
-                            | **QUOTE** | **${result['final_price']:,.0f}** |
-                            """)
-                    else:
-                        st.error("Please enter pickup and delivery addresses")
-            
-            # Show raw data for debugging
-            with st.expander("🔍 View Raw Excel Data"):
-                st.dataframe(pd.read_excel(uploaded_file, header=None).head(50))
-        else:
-            st.error(f"❌ Error parsing file: {data.get('error')}")
+uploaded_file = st.file_uploader(
+    "Drop your BEP Excel file here",
+    type=["xlsx", "xls"],
+    help="Upload the Move Request Excel file"
+)
 
-with tab2:
-    st.header("💰 Manual Quote Calculator")
+if uploaded_file:
+    with st.spinner("Parsing Excel file..."):
+        data = parse_bep_excel(uploaded_file)
     
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("📍 Move Details")
+    if data["success"]:
+        st.success("✅ File parsed! Review and edit the extracted data below.")
         
-        pickup_address = st.text_input(
-            "Pickup Address",
-            placeholder="e.g., 3838 N Central Ave, Phoenix, AZ (Maximus)",
-            key="manual_pickup"
-        )
+        # Two columns
+        col1, col2 = st.columns(2)
         
-        delivery_address = st.text_input(
-            "Delivery Address", 
-            placeholder="e.g., 1000 S Wilmont Rd, Tucson, AZ",
-            key="manual_delivery"
-        )
-        
-        num_machines = st.number_input(
-            "Number of Machines",
-            min_value=1,
-            max_value=10,
-            value=1,
-            key="manual_machines"
-        )
-        
-        is_internal = st.checkbox(
-            "Internal Move (same facility/building)",
-            help="Check if moving within the same facility - uses lower Tucson internal pricing",
-            key="manual_internal"
-        )
-    
-    with col2:
-        st.subheader("🕐 Drive Time")
-        
-        drive_time = st.number_input(
-            "One-Way Drive Time (minutes)",
-            min_value=5,
-            max_value=300,
-            value=60,
-            help="Enter the one-way drive time from Maximus to delivery location",
-            key="manual_drive"
-        )
-        
-        st.info("💡 **Tip:** Use Google Maps to get accurate drive time")
-    
-    st.divider()
-    
-    if st.button("🧮 Calculate Quote", type="primary", use_container_width=True, key="manual_calc"):
-        if pickup_address and delivery_address:
-            result = calculate_price(
-                pickup_address,
-                delivery_address,
-                num_machines,
-                drive_time,
-                is_internal
+        with col1:
+            st.subheader("📋 Move Details")
+            
+            requester = st.text_input("Requester Name", value=data.get("requester") or "")
+            mr_number = st.text_input("MR Number", value=data.get("mr_number") or "")
+            move_date = st.text_input("Move Date", value=data.get("move_date") or "")
+            
+            st.markdown("**Pickup Locations:**")
+            pickups_text = st.text_area(
+                "Pickups (one per line)",
+                value="\n".join(data.get("pickups", [])),
+                height=100
+            )
+            pickups = [p.strip() for p in pickups_text.split("\n") if p.strip()]
+            
+            st.markdown("**Delivery Locations:**")
+            deliveries_text = st.text_area(
+                "Deliveries (one per line)",
+                value="\n".join(data.get("deliveries", [])),
+                height=100
+            )
+            deliveries = [d.strip() for d in deliveries_text.split("\n") if d.strip()]
+            
+            num_machines = st.number_input(
+                "Number of Machines",
+                min_value=1,
+                max_value=20,
+                value=max(data.get("num_machines", 1), len(pickups), len(deliveries))
             )
             
-            st.success("### Quote Generated!")
+            other_notes = st.text_area(
+                "Other Notes",
+                value=data.get("other_notes") or "",
+                height=80
+            )
+        
+        with col2:
+            st.subheader("🕐 Drive Time & Quote")
             
-            result_col1, result_col2, result_col3 = st.columns(3)
+            st.info("""
+            **Route:** Gilbert, AZ → Pickups → Deliveries → Gilbert, AZ
             
-            with result_col1:
-                st.metric(label="💵 Quoted Price", value=f"${result['final_price']:,.0f}")
+            Enter the TOTAL drive time for this route (use Google Maps).
+            """)
             
-            with result_col2:
-                confidence_color = {"HIGH": "🟢", "MEDIUM": "🟡", "LOW": "🔴"}
-                st.metric(label="📊 Confidence", value=f"{confidence_color.get(result['confidence'], '⚪')} {result['confidence']}")
+            drive_time = st.number_input(
+                "Total Route Drive Time (minutes)",
+                min_value=10,
+                max_value=600,
+                value=120,
+                help="Total driving time for the entire route"
+            )
             
-            with result_col3:
-                st.metric(label="📍 Location Type", value=result['location_type'].replace("_", " ").title())
+            max_distance = st.number_input(
+                "Max Single Leg Distance (miles)",
+                min_value=0,
+                max_value=300,
+                value=40,
+                help="Longest single leg of the trip (for buffer calculation)"
+            )
             
-            with st.expander("📋 Price Breakdown", expanded=True):
+            st.divider()
+            
+            # Calculate quote
+            if st.button("🧮 CALCULATE QUOTE", type="primary", use_container_width=True):
+                result = calculate_quote(pickups, deliveries, num_machines, drive_time, max_distance)
+                
+                # Store in session state
+                st.session_state['quote_result'] = result
+                st.session_state['quote_data'] = {
+                    "requester": requester,
+                    "mr_number": mr_number,
+                    "move_date": move_date,
+                    "pickups": pickups,
+                    "deliveries": deliveries,
+                    "num_machines": num_machines,
+                    "other_notes": other_notes,
+                    **result
+                }
+            
+            # Show results if calculated
+            if 'quote_result' in st.session_state:
+                result = st.session_state['quote_result']
+                
+                st.success(f"### 💵 Quote: ${result['final_price']:,}")
+                
+                # Indicators
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    if result['is_tucson']:
+                        st.warning("🌵 Tucson job - $850 min")
+                    if result['is_prison']:
+                        st.warning("🏛️ Prison job - $900 min")
+                with col_b:
+                    if result['buffer_time'] > 0:
+                        st.info(f"📍 Buffer: +{result['buffer_time']} min")
+                
+                # Breakdown
                 st.markdown(f"""
                 | Component | Value |
                 |-----------|-------|
-                | Drive Time (one-way) | {drive_time} minutes |
-                | Estimated Distance | {result['estimated_miles']} miles |
-                | Number of Machines | {result['num_machines']} |
-                | Location Type | {result['location_type']} |
-                | Minimum Price | ${result['min_price']} |
-                | Base Calculation | ${result['base_price']:,.2f} |
-                | **Final Quote** | **${result['final_price']:,.0f}** |
+                | Drive Time | {result['drive_time']} min |
+                | Job Time | {result['job_time']} min |
+                | Buffer | {result['buffer_time']} min |
+                | **Total** | **{result['total_hours']} hrs** |
+                | Rate | ${HOURLY_RATE}/hr |
+                | Minimum | ${result['min_price']} |
+                | **QUOTE** | **${result['final_price']}** |
                 """)
-        else:
-            st.error("Please enter both pickup and delivery addresses")
-
-with tab3:
-    st.header("📍 Known Locations Database")
+                
+                st.caption(f"Formula: {result['formula']}")
+                
+                st.divider()
+                
+                # Action buttons
+                quote_data = st.session_state.get('quote_data', {})
+                
+                # PDF Download
+                pdf_bytes = generate_quote_pdf(quote_data)
+                st.download_button(
+                    "📄 Download Quote PDF",
+                    data=pdf_bytes,
+                    file_name=f"QUOTE_{mr_number or 'BEP'}_{datetime.now().strftime('%Y%m%d')}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True
+                )
+                
+                # Trello button
+                if trello_key and trello_token:
+                    if st.button("📋 Create Trello Card", use_container_width=True):
+                        card = create_trello_card(quote_data, trello_key, trello_token, trello_list)
+                        if card:
+                            st.success(f"✅ Trello card created: {card.get('shortUrl')}")
+                        else:
+                            st.error("Failed to create Trello card")
+                else:
+                    st.info("💡 Add Trello credentials in sidebar to create cards")
+        
+        # Raw data viewer
+        with st.expander("🔍 View Raw Excel Data"):
+            st.dataframe(pd.read_excel(uploaded_file, header=None).head(60))
     
-    if locations:
-        for loc_id, loc_data in locations.items():
-            with st.expander(f"📍 {loc_data.get('name', loc_id)}"):
-                st.markdown(f"""
-                - **Address:** {loc_data.get('address', 'N/A')}
-                - **Type:** {loc_data.get('type', 'standard')}
-                - **Typical Price:** ${loc_data.get('typical_price', 'N/A')}
-                - **Notes:** {loc_data.get('notes', 'None')}
-                """)
     else:
-        st.info("No locations in database yet.")
+        st.error(f"❌ Error: {data.get('error')}")
 
-with tab4:
-    st.header("⚙️ Pricing Rules Configuration")
+else:
+    st.info("👆 Upload a BEP Move Request Excel file to get started")
     
-    st.json(rules)
-    
-    st.divider()
-    st.markdown("""
-    **Rule Version:** 1.0 (Based on 413-job analysis)
-    
-    To modify rules, edit `data/pricing_rules.json`
-    """)
+    # Show sample workflow
+    with st.expander("📖 How it works"):
+        st.markdown("""
+        1. **Upload** the BEP Excel file (Move Request worksheet)
+        2. **Review** the auto-extracted data (requester, addresses, machines)
+        3. **Enter** the drive time from Google Maps
+        4. **Calculate** the quote automatically
+        5. **Download** the PDF quote
+        6. **Create** Trello card (optional)
+        
+        **Pricing Formula:**
+        ```
+        (Drive Time + Job Time + Buffer) ÷ 60 × $170/hour
+        ```
+        
+        **Job Time:** 30 minutes per machine
+        **Buffer:** 20 minutes if any leg > 35 miles
+        **Minimums:** $220 general, $850 Tucson, $900 prison
+        """)
 
 # Footer
 st.divider()
-st.markdown("""
-<div style="text-align: center; color: gray; font-size: 12px;">
-    BEP Pricing Calculator v1.1 | Tool Box & Safe Moving | Built with ❤️ by Grant
-</div>
-""", unsafe_allow_html=True)
+st.caption("BEP Pricing Calculator v2.0 | Tool Box & Safe Moving | Built by Grant")
