@@ -47,6 +47,66 @@ BUFFER_MINUTES = 20
 JOB_TIME_PER_MACHINE = 30  # minutes
 
 # =============================================================================
+# ADDRESS DEDUPLICATION
+# =============================================================================
+
+def normalize_address(address):
+    """Normalize address for deduplication - extract just the street address"""
+    if not address:
+        return ""
+    
+    addr = str(address).upper().strip()
+    
+    # Remove common prefixes like facility names
+    prefixes_to_remove = ['BEP ', 'MAXIMUS ', 'DES ', 'ADES ']
+    for prefix in prefixes_to_remove:
+        if addr.startswith(prefix):
+            addr = addr[len(prefix):]
+    
+    # Remove extra whitespace
+    addr = ' '.join(addr.split())
+    
+    # Extract just street address portion (number + street name)
+    # Look for pattern: number + street name
+    import re
+    street_match = re.search(r'(\d+\s+[A-Z0-9\s\.]+(?:STREET|ST|AVENUE|AVE|BLVD|ROAD|RD|DRIVE|DR|LANE|LN|WAY|PKWY|HWY)[\.]*)', addr)
+    if street_match:
+        addr = street_match.group(1)
+    
+    # Standardize abbreviations
+    addr = addr.replace(' STREET', ' ST').replace(' AVENUE', ' AVE')
+    addr = addr.replace(' BOULEVARD', ' BLVD').replace(' ROAD', ' RD')
+    addr = addr.replace(' DRIVE', ' DR').replace(' LANE', ' LN')
+    addr = addr.replace('.', '').replace(',', '')
+    
+    # Remove suite/unit numbers for deduplication
+    addr = re.sub(r'\s*#\s*\d+', '', addr)
+    addr = re.sub(r'\s*SUITE\s*\d+', '', addr)
+    addr = re.sub(r'\s*UNIT\s*\d+', '', addr)
+    
+    return addr.strip()
+
+def deduplicate_locations(locations):
+    """Deduplicate locations based on normalized address"""
+    seen_addresses = {}
+    unique_locations = []
+    
+    for loc in locations:
+        if not loc:
+            continue
+        
+        normalized = normalize_address(loc)
+        
+        if normalized and normalized not in seen_addresses:
+            seen_addresses[normalized] = loc
+            unique_locations.append(loc)
+        elif not normalized:
+            # Keep locations without clear addresses (might be facility names)
+            unique_locations.append(loc)
+    
+    return unique_locations
+
+# =============================================================================
 # EXCEL PARSING - BEP REQUEST TAB
 # =============================================================================
 
@@ -147,8 +207,25 @@ def parse_bep_excel(uploaded_file):
                         except:
                             pass
         
-        # Count machines based on pickup/delivery pairs
-        extracted["num_machines"] = max(len(extracted["pickups"]), len(extracted["deliveries"]), 1)
+        # DEDUPLICATE locations based on normalized addresses
+        extracted["pickups_raw"] = extracted["pickups"].copy()
+        extracted["deliveries_raw"] = extracted["deliveries"].copy()
+        
+        extracted["pickups"] = deduplicate_locations(extracted["pickups"])
+        extracted["deliveries"] = deduplicate_locations(extracted["deliveries"])
+        
+        # Count machines based on pickup/delivery pairs (use raw count before dedup)
+        extracted["num_machines"] = max(
+            len(extracted["pickups_raw"]), 
+            len(extracted["deliveries_raw"]), 
+            1
+        )
+        
+        # Count unique stops (deduplicated)
+        extracted["unique_stops"] = len(set(
+            [normalize_address(p) for p in extracted["pickups"]] + 
+            [normalize_address(d) for d in extracted["deliveries"]]
+        ))
         
         # Store raw text for display
         extracted["raw_text"] = "\n".join(all_text)
@@ -495,6 +572,13 @@ if uploaded_file:
                 value=data.get("other_notes") or "",
                 height=80
             )
+            
+            # Show deduplication info
+            if data.get("pickups_raw") or data.get("deliveries_raw"):
+                raw_count = len(data.get("pickups_raw", [])) + len(data.get("deliveries_raw", []))
+                dedup_count = len(pickups) + len(deliveries)
+                if raw_count > dedup_count:
+                    st.info(f"📍 **Deduplicated:** {raw_count} locations → {dedup_count} unique stops")
         
         with col2:
             st.subheader("🕐 Drive Time & Quote")
