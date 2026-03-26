@@ -456,7 +456,17 @@ def generate_quote_pdf(data):
     pdf.set_text_color(128, 128, 128)
     pdf.cell(0, 5, 'Quote valid for 30 days. Additional charges may apply for stairs.', ln=True, align='C')
     
-    return pdf.output()
+    # Return as bytes for Streamlit download
+    pdf_output = pdf.output()
+    if isinstance(pdf_output, bytearray):
+        return bytes(pdf_output)
+    elif isinstance(pdf_output, bytes):
+        return pdf_output
+    else:
+        # Fallback: write to BytesIO
+        buffer = BytesIO()
+        pdf.output(buffer)
+        return buffer.getvalue()
 
 # =============================================================================
 # TRELLO INTEGRATION
