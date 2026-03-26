@@ -9,6 +9,7 @@ import math
 from datetime import datetime
 import pandas as pd
 from io import BytesIO
+from fpdf import FPDF
 
 # Page config
 st.set_page_config(
@@ -268,6 +269,118 @@ def calculate_confidence(location_type, estimated_miles, is_internal_move):
         return "MEDIUM"
 
 # =============================================================================
+# PDF GENERATION
+# =============================================================================
+
+def generate_quote_pdf(quote_data):
+    """Generate a professional quote PDF"""
+    pdf = FPDF()
+    pdf.add_page()
+    
+    # Header
+    pdf.set_font('Helvetica', 'B', 24)
+    pdf.set_text_color(0, 102, 204)
+    pdf.cell(0, 15, 'Tool Box & Safe Moving', ln=True, align='C')
+    
+    pdf.set_font('Helvetica', '', 12)
+    pdf.set_text_color(100, 100, 100)
+    pdf.cell(0, 8, 'BEP Vending Machine Move Quote', ln=True, align='C')
+    pdf.cell(0, 6, 'Phone: (602) 935-4209 | Email: ryan@curlvending.com', ln=True, align='C')
+    
+    pdf.ln(10)
+    
+    # Quote info box
+    pdf.set_fill_color(240, 240, 240)
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_font('Helvetica', 'B', 14)
+    pdf.cell(0, 10, f"QUOTE: ${quote_data.get('final_price', 0):,.0f}", ln=True, align='C', fill=True)
+    
+    pdf.ln(5)
+    
+    # Date
+    pdf.set_font('Helvetica', '', 10)
+    pdf.cell(0, 6, f"Date: {datetime.now().strftime('%B %d, %Y')}", ln=True, align='R')
+    
+    pdf.ln(5)
+    
+    # Move Details Section
+    pdf.set_font('Helvetica', 'B', 12)
+    pdf.set_fill_color(0, 102, 204)
+    pdf.set_text_color(255, 255, 255)
+    pdf.cell(0, 8, '  MOVE DETAILS', ln=True, fill=True)
+    
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_font('Helvetica', '', 11)
+    
+    details = [
+        ('MR Number', quote_data.get('mr_number', 'N/A')),
+        ('Requester', quote_data.get('requester', 'N/A')),
+        ('Pickup Location', quote_data.get('pickup_address', 'N/A')),
+        ('Delivery Location', quote_data.get('delivery_address', 'N/A')),
+        ('Number of Machines', str(quote_data.get('num_machines', 1))),
+        ('Move Date', quote_data.get('move_date', 'TBD')),
+    ]
+    
+    for label, value in details:
+        pdf.set_font('Helvetica', 'B', 10)
+        pdf.cell(60, 7, f"{label}:")
+        pdf.set_font('Helvetica', '', 10)
+        pdf.cell(0, 7, str(value) if value else 'N/A', ln=True)
+    
+    pdf.ln(5)
+    
+    # Pricing Section
+    pdf.set_font('Helvetica', 'B', 12)
+    pdf.set_fill_color(0, 102, 204)
+    pdf.set_text_color(255, 255, 255)
+    pdf.cell(0, 8, '  PRICING BREAKDOWN', ln=True, fill=True)
+    
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_font('Helvetica', '', 10)
+    
+    pricing = [
+        ('Drive Time (one-way)', f"{quote_data.get('drive_time', 60)} minutes"),
+        ('Estimated Distance', f"{quote_data.get('estimated_miles', 0)} miles"),
+        ('Location Type', quote_data.get('location_type', 'standard').replace('_', ' ').title()),
+        ('Minimum Price', f"${quote_data.get('min_price', 220)}"),
+        ('Confidence Level', quote_data.get('confidence', 'MEDIUM')),
+    ]
+    
+    for label, value in pricing:
+        pdf.set_font('Helvetica', '', 10)
+        pdf.cell(60, 7, f"{label}:")
+        pdf.cell(0, 7, str(value), ln=True)
+    
+    pdf.ln(5)
+    
+    # Total
+    pdf.set_font('Helvetica', 'B', 16)
+    pdf.set_fill_color(34, 139, 34)
+    pdf.set_text_color(255, 255, 255)
+    pdf.cell(0, 12, f"  TOTAL QUOTE: ${quote_data.get('final_price', 0):,.0f}", ln=True, fill=True)
+    
+    pdf.ln(10)
+    
+    # Notes
+    if quote_data.get('notes'):
+        pdf.set_text_color(0, 0, 0)
+        pdf.set_font('Helvetica', 'B', 10)
+        pdf.cell(0, 6, 'Notes:', ln=True)
+        pdf.set_font('Helvetica', '', 10)
+        pdf.multi_cell(0, 5, quote_data.get('notes', ''))
+        pdf.ln(5)
+    
+    # Footer
+    pdf.ln(10)
+    pdf.set_font('Helvetica', 'I', 9)
+    pdf.set_text_color(128, 128, 128)
+    pdf.cell(0, 5, 'This quote is valid for 30 days from the date above.', ln=True, align='C')
+    pdf.cell(0, 5, 'Pricing based on standard business hours. Additional charges may apply for stairs or special requirements.', ln=True, align='C')
+    
+    # Return PDF as bytes
+    return pdf.output()
+
+# =============================================================================
 # STREAMLIT UI
 # =============================================================================
 
@@ -383,6 +496,36 @@ with tab1:
                         confidence_emoji = {"HIGH": "🟢", "MEDIUM": "🟡", "LOW": "🔴"}
                         st.markdown(f"**Confidence:** {confidence_emoji.get(result['confidence'], '⚪')} {result['confidence']}")
                         st.markdown(f"**Location Type:** {result['location_type'].replace('_', ' ').title()}")
+                        
+                        # Store data for PDF generation
+                        quote_data = {
+                            "requester": requester,
+                            "mr_number": mr_number,
+                            "pickup_address": pickup,
+                            "delivery_address": delivery,
+                            "num_machines": machines,
+                            "drive_time": drive_time,
+                            "move_date": data.get("move_date", "TBD"),
+                            "notes": data.get("notes", ""),
+                            "final_price": result['final_price'],
+                            "min_price": result['min_price'],
+                            "estimated_miles": result['estimated_miles'],
+                            "location_type": result['location_type'],
+                            "confidence": result['confidence']
+                        }
+                        
+                        # Generate PDF
+                        pdf_bytes = generate_quote_pdf(quote_data)
+                        
+                        # Download button for PDF
+                        st.download_button(
+                            label="📄 Download Quote PDF",
+                            data=pdf_bytes,
+                            file_name=f"QUOTE_{mr_number or 'BEP'}_{datetime.now().strftime('%Y%m%d')}.pdf",
+                            mime="application/pdf",
+                            type="primary",
+                            use_container_width=True
+                        )
                         
                         with st.expander("📋 Full Breakdown"):
                             st.markdown(f"""
