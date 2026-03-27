@@ -94,22 +94,26 @@ def parse_bep_excel_v2(uploaded_file):
             result["raw_data"].append(" | ".join([c for c in row_data if c]))
         
         # FIRST PASS: Find key section boundaries
+        machine_data_end_row = None
         other_notes_row = None
         machine_section_start = None
         
         for row_idx, row in enumerate(rows):
             row_text = " ".join(row).upper()
             
-            # Find where "Other Notes" section starts - this is END of machine data
-            if "OTHER NOTE" in row_text or "SPECIAL INSTRUCTION" in row_text or "ADDITIONAL NOTE" in row_text:
+            # Find where "Comments:" starts - this is END of machine data
+            if "COMMENT" in row_text or "COMMENTS:" in row_text:
+                machine_data_end_row = row_idx
+            
+            # Find "Other Notes" section (for extracting the notes content)
+            if "OTHER NOTE" in row_text or "SPECIAL INSTRUCTION" in row_text:
                 other_notes_row = row_idx
                 # Capture the notes content (might be on same row or next rows)
                 for check_row in rows[row_idx:row_idx+5]:
                     for cell in check_row:
-                        if cell and len(cell) > 20 and 'NAN' not in cell.upper() and 'OTHER NOTE' not in cell.upper():
+                        if cell and len(cell) > 20 and 'NAN' not in cell.upper() and 'OTHER NOTE' not in cell.upper() and 'COMMENT' not in cell.upper():
                             result["other_notes"] = cell
                             break
-                break
             
             # Find where machine data starts (first numbered item or "PICK UP" header)
             if machine_section_start is None:
@@ -131,8 +135,8 @@ def parse_bep_excel_v2(uploaded_file):
                     result["requester"] = cell
                     break
         
-        # SECOND PASS: Extract machines ONLY up to "Other Notes" section
-        end_row = other_notes_row if other_notes_row else len(rows)
+        # SECOND PASS: Extract machines ONLY up to "Comments:" section
+        end_row = machine_data_end_row if machine_data_end_row else len(rows)
         start_row = machine_section_start if machine_section_start else 0
         
         current_machine = None
