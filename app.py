@@ -597,6 +597,27 @@ def create_trello_card(data, api_key, api_token, list_id):
         st.error(f"Trello API error {response.status_code}: {response.text}")
         return None
 
+def attach_pdf_to_card(card_id, pdf_bytes, filename, api_key, api_token):
+    """Attach PDF file to a Trello card"""
+    url = f"https://api.trello.com/1/cards/{card_id}/attachments"
+    
+    params = {
+        'key': api_key,
+        'token': api_token,
+        'name': filename
+    }
+    
+    files = {
+        'file': (filename, pdf_bytes, 'application/pdf')
+    }
+    
+    response = requests.post(url, params=params, files=files)
+    if response.status_code == 200:
+        return True
+    else:
+        st.error(f"PDF attachment error: {response.status_code}: {response.text}")
+        return False
+
 # =============================================================================
 # STREAMLIT UI
 # =============================================================================
@@ -791,12 +812,25 @@ if uploaded_file:
                 
                 # Trello
                 if trello_key and trello_token:
-                    if st.button("📋 Create Trello Card", use_container_width=True):
-                        card = create_trello_card(full_data, trello_key, trello_token, trello_list)
-                        if card:
-                            st.success(f"✅ Card created: {card.get('shortUrl')}")
-                        else:
-                            st.error("Failed to create Trello card")
+                    if st.button("📋 Create Trello Card + Attach PDF", use_container_width=True):
+                        with st.spinner("Creating card..."):
+                            card = create_trello_card(full_data, trello_key, trello_token, trello_list)
+                            if card:
+                                card_id = card.get('id')
+                                st.success(f"✅ Card created: {card.get('shortUrl')}")
+                                
+                                # Attach PDF if available
+                                if 'request_pdf' in st.session_state:
+                                    with st.spinner("Attaching PDF..."):
+                                        pdf_filename = f"CAPTURE_{mr_number or 'BEP'}_{datetime.now().strftime('%Y%m%d')}.pdf"
+                                        if attach_pdf_to_card(card_id, st.session_state['request_pdf'], pdf_filename, trello_key, trello_token):
+                                            st.success("✅ PDF attached!")
+                                        else:
+                                            st.warning("⚠️ Card created but PDF attachment failed")
+                                else:
+                                    st.info("💡 Convert Excel to PDF first, then create card to auto-attach")
+                            else:
+                                st.error("Failed to create Trello card")
         
         # Raw data viewer
         with st.expander("🔍 Raw Excel Data"):
