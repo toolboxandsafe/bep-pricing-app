@@ -66,7 +66,7 @@ def normalize_address(address):
 def parse_bep_excel_v2(uploaded_file):
     """
     Parse BEP Move Request Excel - Extract machines with pickup/delivery pairs
-    Looks for numbered sections (1, 2, 3...) indicating individual machines
+    IMPORTANT: Stop parsing machines when we hit "Other Notes" section
     """
     try:
         # Read REQUEST tab
@@ -79,21 +79,44 @@ def parse_bep_excel_v2(uploaded_file):
             "success": True,
             "requester": None,
             "mr_number": None,
-            "machines": [],  # List of {pickup, delivery, type}
+            "machines": [],
             "other_notes": None,
             "move_date": None,
             "contacts": [],
             "raw_data": []
         }
         
-        # Convert to list of rows for easier processing
+        # Convert to list of rows
         rows = []
         for idx, row in df.iterrows():
             row_data = [str(c).strip() if pd.notna(c) else "" for c in row]
             rows.append(row_data)
             result["raw_data"].append(" | ".join([c for c in row_data if c]))
         
-        # Find MR number (format: 1XX-XX/XX)
+        # FIRST PASS: Find key section boundaries
+        other_notes_row = None
+        machine_section_start = None
+        
+        for row_idx, row in enumerate(rows):
+            row_text = " ".join(row).upper()
+            
+            # Find where "Other Notes" section starts - this is END of machine data
+            if "OTHER NOTE" in row_text or "SPECIAL INSTRUCTION" in row_text or "ADDITIONAL NOTE" in row_text:
+                other_notes_row = row_idx
+                # Capture the notes content (might be on same row or next rows)
+                for check_row in rows[row_idx:row_idx+5]:
+                    for cell in check_row:
+                        if cell and len(cell) > 20 and 'NAN' not in cell.upper() and 'OTHER NOTE' not in cell.upper():
+                            result["other_notes"] = cell
+                            break
+                break
+            
+            # Find where machine data starts (first numbered item or "PICK UP" header)
+            if machine_section_start is None:
+                if "ITEMS TO" in row_text or "ITEM TO" in row_text:
+                    machine_section_start = row_idx
+        
+        # Find MR number
         for row in rows:
             for cell in row:
                 mr_match = re.search(r'(1\w{2}-\d{2}/\d{2})', cell)
@@ -101,69 +124,80 @@ def parse_bep_excel_v2(uploaded_file):
                     result["mr_number"] = mr_match.group(1)
                     break
         
-        # Find requester (typically row 47, index 46)
+        # Find requester (row 47, index 46)
         if len(rows) > 46:
             for cell in rows[46][:4]:
                 if cell and not any(x in cell.upper() for x in ['REQUESTER', 'NAME', 'DATE', 'SIGNATURE', 'NAN']):
                     result["requester"] = cell
                     break
         
-        # Look for numbered machine sections
-        # Pattern: rows with "1", "2", "3" etc. in first column indicating machine number
-        current_machine = None
-        current_section = None  # 'pickup' or 'delivery'
+        # SECOND PASS: Extract machines ONLY up to "Other Notes" section
+        end_row = other_notes_row if other_notes_row else len(rows)
+        start_row = machine_section_start if machine_section_start else 0
         
-        for row_idx, row in enumerate(rows):
+        current_machine = None
+        current_section = None
+        
+        for row_idx in range(start_row, end_row):
+            row = rows[row_idx]
             row_text = " ".join(row).upper()
             
-            # Check for machine number indicator (standalone number in first columns)
-            for col_idx, cell in enumerate(row[:3]):
-                if cell.strip() in ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10']:
-                    # New machine section
-                    if current_machine:
-                        result["machines"].append(current_machine)
-                    current_machine = {
-                        "number": int(cell.strip()),
-                        "pickup": None,
-                        "pickup_address": None,
-                        "delivery": None, 
-                        "delivery_address": None,
-                        "type": None
-                    }
-                    break
+            # Skip if we've hit other notes
+            if "OTHER NOTE" in row_text:
+                break
+            
+            # Check for machine number (must be in specific column position, not random numbers)
+            # Machine numbers are typically in column A or B (index 0 or 1)
+            for col_idx in range(min(2, len(row))):
+                cell = row[col_idx].strip()
+                # Must be standalone digit 1-10, not part of address or date
+                if cell in ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10']:
+                    # Verify this row also has pickup/delivery context nearby
+                    if any(kw in row_text for kw in ['PICK', 'DELIVER', 'SITE', 'ITEM', 'MACHINE', 'VEND', 'COMBO', 'KIOSK']):
+                        if current_machine and (current_machine.get("pickup") or current_machine.get("delivery")):
+                            result["machines"].append(current_machine)
+                        current_machine = {
+                            "number": int(cell),
+                            "pickup": None,
+                            "pickup_address": None,
+                            "delivery": None,
+                            "delivery_address": None,
+                            "type": None
+                        }
+                        break
             
             # Section detection
             if "PICK UP" in row_text or "PICKUP" in row_text:
                 current_section = "pickup"
             elif "DELIVER" in row_text or "DELIVERY" in row_text:
                 current_section = "delivery"
-            elif "OTHER NOTE" in row_text or "SPECIAL" in row_text:
-                current_section = "notes"
             
-            # Extract addresses/locations
+            # Extract addresses (only if we have a current machine and valid section)
             if current_machine and current_section in ['pickup', 'delivery']:
                 for cell in row:
-                    if not cell or cell.upper() in ['NAN', 'PICK UP', 'PICKUP', 'DELIVERY', 'DELIVER TO']:
+                    if not cell or len(cell) < 5:
+                        continue
+                    cell_upper = cell.upper()
+                    
+                    # Skip labels
+                    if cell_upper in ['NAN', 'PICK UP', 'PICKUP', 'DELIVERY', 'DELIVER TO', 'SITE', 'LOCATION']:
                         continue
                     
-                    # Check if this looks like an address or facility
-                    cell_upper = cell.upper()
+                    # Check for address indicators
                     is_address = any(ind in cell_upper for ind in [
-                        'AVE', 'STREET', 'ST ', 'BLVD', 'ROAD', 'RD ', 'DRIVE', 'DR ', 
-                        'LANE', 'WAY', 'PHOENIX', 'PHX', 'TUCSON', 'MESA', 'TEMPE', 
+                        'AVE', 'STREET', 'ST ', 'BLVD', 'ROAD', 'RD ', 'DRIVE', 'DR ',
+                        'LANE', 'WAY', 'PHOENIX', 'PHX', 'TUCSON', 'MESA', 'TEMPE',
                         'GILBERT', 'SCOTTSDALE', 'CHANDLER', 'GLENDALE', 'PEORIA',
-                        'MAXIMUS', 'DES ', 'ADES', 'BEP ', 'DCS'
-                    ])
+                        'MAXIMUS', 'DES ', 'ADES', 'BEP ', 'DCS', 'CIVIC'
+                    ]) or re.search(r'\d{3,5}\s+[A-Z]', cell_upper)
                     
-                    if is_address or re.search(r'\d{4,5}\s+[A-Z]', cell_upper):
-                        if current_section == "pickup":
-                            if not current_machine["pickup"]:
-                                current_machine["pickup"] = cell
-                                current_machine["pickup_address"] = normalize_address(cell)
-                        elif current_section == "delivery":
-                            if not current_machine["delivery"]:
-                                current_machine["delivery"] = cell
-                                current_machine["delivery_address"] = normalize_address(cell)
+                    if is_address:
+                        if current_section == "pickup" and not current_machine["pickup"]:
+                            current_machine["pickup"] = cell
+                            current_machine["pickup_address"] = normalize_address(cell)
+                        elif current_section == "delivery" and not current_machine["delivery"]:
+                            current_machine["delivery"] = cell
+                            current_machine["delivery_address"] = normalize_address(cell)
             
             # Extract machine type
             if current_machine:
@@ -172,22 +206,16 @@ def parse_bep_excel_v2(uploaded_file):
                     if any(kw in cell_upper for kw in ['VENDING', 'COMBO', 'SNACK', 'SODA', 'CHANGER', 'KIOSK', 'FROZEN', 'ATM']):
                         if not current_machine["type"]:
                             current_machine["type"] = cell
-            
-            # Other notes
-            if current_section == "notes":
-                for cell in row:
-                    if cell and len(cell) > 15 and 'NAN' not in cell.upper():
-                        result["other_notes"] = cell
         
-        # Don't forget last machine
-        if current_machine:
+        # Add last machine if valid
+        if current_machine and (current_machine.get("pickup") or current_machine.get("delivery")):
             result["machines"].append(current_machine)
         
-        # If no numbered machines found, try alternate extraction
+        # Fallback: If no numbered machines found, try alternate method
         if not result["machines"]:
-            result["machines"] = extract_machines_alternate(rows)
+            result["machines"] = extract_machines_alternate(rows[:end_row])
         
-        # Deduplicate machines by address
+        # Deduplicate
         result["unique_pickups"] = list(set([m["pickup_address"] for m in result["machines"] if m.get("pickup_address")]))
         result["unique_deliveries"] = list(set([m["delivery_address"] for m in result["machines"] if m.get("delivery_address")]))
         
