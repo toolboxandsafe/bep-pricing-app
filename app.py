@@ -636,12 +636,34 @@ def get_card_info(card_id, api_key, api_token):
         return response.json()
     return None
 
-def download_attachment(url):
-    """Download file from URL"""
-    response = requests.get(url)
-    if response.status_code == 200:
-        return response.content
-    return None
+def download_attachment(url, api_key=None, api_token=None):
+    """Download file from URL with optional Trello auth"""
+    headers = {}
+    
+    # For Trello attachments, try with auth header
+    if api_key and api_token:
+        headers['Authorization'] = f'OAuth oauth_consumer_key="{api_key}", oauth_token="{api_token}"'
+    
+    try:
+        response = requests.get(url, headers=headers, timeout=30)
+        if response.status_code == 200:
+            return response.content
+        
+        # Fallback: try adding auth as query params
+        if api_key and api_token:
+            if '?' in url:
+                auth_url = f"{url}&key={api_key}&token={api_token}"
+            else:
+                auth_url = f"{url}?key={api_key}&token={api_token}"
+            response = requests.get(auth_url, timeout=30)
+            if response.status_code == 200:
+                return response.content
+        
+        st.error(f"Download failed: {response.status_code}")
+        return None
+    except Exception as e:
+        st.error(f"Download error: {e}")
+        return None
 
 def extract_quote_from_title(title):
     """Extract quote amount from card title like 'Name - MR# - $325'"""
@@ -826,13 +848,7 @@ if page == "📝 Generate Quote":
                 if st.button("🧮 Generate QUOTE PDF", type="primary", use_container_width=True):
                     with st.spinner("Downloading Excel..."):
                         excel_url = excel_attachments[0].get('url')
-                        # Add auth to URL for Trello attachments
-                        if '?' in excel_url:
-                            excel_url += f"&key={trello_key}&token={trello_token}"
-                        else:
-                            excel_url += f"?key={trello_key}&token={trello_token}"
-                        
-                        excel_bytes = download_attachment(excel_url)
+                        excel_bytes = download_attachment(excel_url, trello_key, trello_token)
                     
                     if excel_bytes:
                         with st.spinner("Filling worksheet & generating PDF..."):
