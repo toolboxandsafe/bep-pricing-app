@@ -11,6 +11,9 @@ import re
 import subprocess
 import tempfile
 import os
+import imaplib
+import email
+from email.header import decode_header
 from datetime import datetime, timedelta
 import pandas as pd
 from io import BytesIO
@@ -28,6 +31,102 @@ st.set_page_config(
 # Constants
 HQ_ADDRESS = "Gilbert, AZ 85295"
 HOURLY_RATE = 170
+
+# Gmail IMAP settings
+GMAIL_USER = os.environ.get("GMAIL_USER", "grantworks2026@gmail.com")
+GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
+
+# =============================================================================
+# GMAIL IMAP FUNCTIONS
+# =============================================================================
+
+def connect_to_gmail():
+    """Connect to Gmail via IMAP"""
+    if not GMAIL_APP_PASSWORD:
+        return None
+    try:
+        mail = imaplib.IMAP4_SSL("imap.gmail.com")
+        mail.login(GMAIL_USER, GMAIL_APP_PASSWORD)
+        return mail
+    except Exception as e:
+        st.error(f"Gmail connection failed: {e}")
+        return None
+
+def get_recent_emails_with_excel(mail, limit=10):
+    """Get recent emails that have Excel attachments"""
+    emails = []
+    try:
+        mail.select("INBOX")
+        
+        # Search for recent emails
+        _, message_numbers = mail.search(None, "ALL")
+        message_list = message_numbers[0].split()
+        
+        # Get last N emails
+        recent_messages = message_list[-limit*2:] if len(message_list) > limit*2 else message_list
+        recent_messages.reverse()  # Most recent first
+        
+        for num in recent_messages:
+            if len(emails) >= limit:
+                break
+                
+            _, msg_data = mail.fetch(num, "(RFC822)")
+            email_body = msg_data[0][1]
+            msg = email.message_from_bytes(email_body)
+            
+            # Check for Excel attachment
+            has_excel = False
+            for part in msg.walk():
+                if part.get_content_maintype() == "multipart":
+                    continue
+                filename = part.get_filename()
+                if filename and (filename.endswith('.xlsx') or filename.endswith('.xls')):
+                    has_excel = True
+                    break
+            
+            if has_excel:
+                # Decode subject
+                subject = msg["Subject"]
+                if subject:
+                    decoded = decode_header(subject)
+                    subject = ""
+                    for part, encoding in decoded:
+                        if isinstance(part, bytes):
+                            subject += part.decode(encoding or 'utf-8', errors='ignore')
+                        else:
+                            subject += part
+                
+                # Get date
+                date_str = msg["Date"]
+                
+                # Get sender
+                sender = msg["From"]
+                
+                emails.append({
+                    "id": num.decode(),
+                    "subject": subject or "(No Subject)",
+                    "from": sender,
+                    "date": date_str,
+                    "message": msg
+                })
+        
+        return emails
+    except Exception as e:
+        st.error(f"Error fetching emails: {e}")
+        return []
+
+def get_excel_from_email(msg):
+    """Extract Excel attachment from email message"""
+    for part in msg.walk():
+        if part.get_content_maintype() == "multipart":
+            continue
+        filename = part.get_filename()
+        if filename and (filename.endswith('.xlsx') or filename.endswith('.xls')):
+            return {
+                "filename": filename,
+                "data": part.get_payload(decode=True)
+            }
+    return None
 BUFFER_THRESHOLD_MILES = 35
 BUFFER_MINUTES = 20
 JOB_TIME_PER_MACHINE = 30  # minutes
@@ -520,7 +619,11 @@ def create_trello_card(data, api_key, api_token, list_id):
     stops.append("HQ")
     driving_stops = " - ".join(stops)
     
-    title = f"{data.get('requester', 'Unknown')} - {data.get('mr_number', 'BEP')} - ${data.get('final_price', 0)}"
+    # Use custom title if provided, otherwise build from data
+    if data.get('card_title'):
+        title = data.get('card_title')
+    else:
+        title = f"{data.get('requester', 'Unknown')} - {data.get('mr_number', 'BEP')} - ${data.get('final_price', 0)}"
     
     desc = f"""## Move Request Quote
 
@@ -758,7 +861,7 @@ trello_list = os.environ.get("TRELLO_LIST_ID", "699c9f9d6117bdcbb2d0e0aa")
 # Sidebar - Page Navigation
 with st.sidebar:
     st.title("🚚 BEP Tools")
-    page = st.radio("Select Page:", ["📤 New Request", "📝 Generate Quote"], label_visibility="collapsed")
+    page = st.radio("Select Page:", ["📤 New Request", "📧 From Email", "📝 Generate Quote"], label_visibility="collapsed")
     
     st.divider()
     
@@ -786,9 +889,162 @@ with st.sidebar:
             st.warning("⚠️ Set TRELLO_API_KEY and TRELLO_TOKEN in Railway variables")
 
 # =============================================================================
-# PAGE 2: GENERATE QUOTE PDF
+# PAGE 2: FROM EMAIL
 # =============================================================================
-if page == "📝 Generate Quote":
+if page == "📧 From Email":
+    st.title("📧 Process from Email")
+    st.markdown("**Select a forwarded email → Auto-extract Excel & subject → Create card**")
+    
+    st.divider()
+    
+    if not GMAIL_APP_PASSWORD:
+        st.error("⚠️ Gmail not configured. Add GMAIL_APP_PASSWORD to Railway variables.")
+        st.markdown("""
+        **Setup steps:**
+        1. Go to [Google Account Security](https://myaccount.google.com/security)
+        2. Enable 2-Factor Authentication
+        3. Create an App Password for "Mail"
+        4. Add to Railway: `GMAIL_APP_PASSWORD` = your app password
+        """)
+    else:
+        with st.spinner("Connecting to Gmail..."):
+            mail = connect_to_gmail()
+        
+        if mail:
+            st.success("✅ Connected to Gmail")
+            
+            # Fetch recent emails with Excel
+            with st.spinner("Fetching recent emails with Excel attachments..."):
+                emails = get_recent_emails_with_excel(mail, limit=10)
+            
+            if emails:
+                st.markdown(f"### Found {len(emails)} email(s) with Excel attachments")
+                
+                for i, em in enumerate(emails):
+                    with st.expander(f"📩 {em['subject'][:60]}...", expanded=(i==0)):
+                        st.markdown(f"**From:** {em['from']}")
+                        st.markdown(f"**Date:** {em['date']}")
+                        st.markdown(f"**Subject:** {em['subject']}")
+                        
+                        if st.button(f"📥 Process this email", key=f"process_{em['id']}", use_container_width=True):
+                            # Extract Excel
+                            excel_data = get_excel_from_email(em['message'])
+                            
+                            if excel_data:
+                                st.session_state['email_excel'] = excel_data['data']
+                                st.session_state['email_excel_name'] = excel_data['filename']
+                                st.session_state['email_subject'] = em['subject']
+                                st.success(f"✅ Loaded: {excel_data['filename']}")
+                
+                # If email selected, show processing UI
+                if 'email_excel' in st.session_state:
+                    st.divider()
+                    st.markdown("### 📋 Process Selected Email")
+                    
+                    st.info(f"**Subject:** {st.session_state.get('email_subject', '')}")
+                    st.info(f"**File:** {st.session_state.get('email_excel_name', '')}")
+                    
+                    # Parse the Excel
+                    excel_bytes = st.session_state['email_excel']
+                    with st.spinner("Parsing Excel..."):
+                        uploaded_file = BytesIO(excel_bytes)
+                        data = parse_bep_excel_v2(uploaded_file)
+                    
+                    if data['success']:
+                        st.success(f"✅ Extracted {len(data['machines'])} machine(s)")
+                        
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            # Editable fields
+                            card_title = st.text_input("Card Title", value=st.session_state.get('email_subject', ''))
+                            requester = st.text_input("Requester", value=data.get('requester') or '')
+                            mr_number = st.text_input("MR Number", value=data.get('mr_number') or '')
+                            
+                            st.markdown("**Machines:**")
+                            for m in data.get('machines', []):
+                                st.caption(f"• {m.get('type', 'Machine')}: {m.get('pickup', '?')} → {m.get('delivery', '?')}")
+                        
+                        with col2:
+                            # Get unique addresses
+                            unique_pickups = list(set([m["pickup"] for m in data.get('machines', []) if m.get("pickup")]))
+                            unique_deliveries = list(set([m["delivery"] for m in data.get('machines', []) if m.get("delivery")]))
+                            
+                            if st.button("🧮 Calculate Quote", type="primary", use_container_width=True):
+                                with st.spinner("Calculating route..."):
+                                    route_data = calculate_route(unique_pickups, unique_deliveries)
+                                    quote = calculate_quote(route_data, len(data.get('machines', [])), unique_pickups, unique_deliveries)
+                                    
+                                    st.session_state['email_quote'] = quote
+                                    st.session_state['email_route'] = route_data
+                                    st.session_state['email_data'] = data
+                            
+                            if 'email_quote' in st.session_state:
+                                quote = st.session_state['email_quote']
+                                st.success(f"### 💵 Quote: ${quote['final_price']:,}")
+                                st.caption(f"Drive: {quote['drive_time']}min + Job: {quote['job_time']}min + Buffer: {quote['buffer_time']}min")
+                                
+                                # Build full title
+                                full_title = f"{requester} - {card_title} - ${quote['final_price']}" if requester else f"{card_title} - ${quote['final_price']}"
+                                st.text_input("Final Card Title", value=full_title, key="final_title")
+                                
+                                if trello_key and trello_token:
+                                    if st.button("📋 Create Trello Card + Attach Files", use_container_width=True, type="primary"):
+                                        with st.spinner("Creating card..."):
+                                            full_data = {
+                                                "requester": requester,
+                                                "mr_number": mr_number,
+                                                "machines": data.get('machines', []),
+                                                "unique_pickups": unique_pickups,
+                                                "unique_deliveries": unique_deliveries,
+                                                "num_machines": len(data.get('machines', [])),
+                                                "other_notes": data.get('other_notes'),
+                                                **quote
+                                            }
+                                            
+                                            # Override title
+                                            full_data['card_title'] = st.session_state.get('final_title', full_title)
+                                            
+                                            card = create_trello_card(full_data, trello_key, trello_token, trello_list)
+                                            
+                                            if card:
+                                                card_id = card.get('id')
+                                                st.success(f"✅ Card created!")
+                                                
+                                                # Attach Excel
+                                                with st.spinner("Attaching Excel..."):
+                                                    attach_excel_to_card(card_id, excel_bytes, st.session_state.get('email_excel_name', 'request.xlsx'), trello_key, trello_token)
+                                                
+                                                # Generate and attach CAPTURE PDF
+                                                with st.spinner("Generating CAPTURE PDF..."):
+                                                    pdf = convert_excel_to_pdf(excel_bytes, st.session_state.get('email_excel_name', 'request.xlsx'))
+                                                    if pdf:
+                                                        pdf = remove_pdf_pages(pdf, [1])
+                                                        pdf_name = f"CAPTURE_{mr_number or 'BEP'}_{datetime.now().strftime('%Y%m%d')}.pdf"
+                                                        attach_pdf_to_card(card_id, pdf, pdf_name, trello_key, trello_token)
+                                                
+                                                st.success("✅ All files attached!")
+                                                st.markdown(f"[Open Card]({card.get('shortUrl')})")
+                                                
+                                                # Clear session
+                                                for key in ['email_excel', 'email_excel_name', 'email_subject', 'email_quote', 'email_route', 'email_data']:
+                                                    if key in st.session_state:
+                                                        del st.session_state[key]
+                                            else:
+                                                st.error("Failed to create card")
+                    else:
+                        st.error(f"Failed to parse Excel: {data.get('error')}")
+            else:
+                st.info("No recent emails with Excel attachments found.")
+            
+            mail.logout()
+        else:
+            st.error("Could not connect to Gmail")
+
+# =============================================================================
+# PAGE 3: GENERATE QUOTE PDF
+# =============================================================================
+elif page == "📝 Generate Quote":
     st.title("📝 Generate Quote PDF")
     st.markdown("**After Ryan approves → Generate QUOTE PDF with filled worksheet**")
     
