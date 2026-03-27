@@ -589,8 +589,8 @@ def create_trello_card(data, api_key, api_token, list_id):
         st.error(f"Trello API error {response.status_code}: {response.text}")
         return None
 
-def attach_pdf_to_card(card_id, pdf_bytes, filename, api_key, api_token):
-    """Attach PDF file to a Trello card"""
+def attach_file_to_card(card_id, file_bytes, filename, mime_type, api_key, api_token):
+    """Attach any file to a Trello card"""
     url = f"https://api.trello.com/1/cards/{card_id}/attachments"
     
     params = {
@@ -600,25 +600,146 @@ def attach_pdf_to_card(card_id, pdf_bytes, filename, api_key, api_token):
     }
     
     files = {
-        'file': (filename, pdf_bytes, 'application/pdf')
+        'file': (filename, file_bytes, mime_type)
     }
     
     response = requests.post(url, params=params, files=files)
     if response.status_code == 200:
         return True
     else:
-        st.error(f"PDF attachment error: {response.status_code}: {response.text}")
+        st.error(f"Attachment error: {response.status_code}: {response.text}")
         return False
+
+def attach_pdf_to_card(card_id, pdf_bytes, filename, api_key, api_token):
+    """Attach PDF file to a Trello card"""
+    return attach_file_to_card(card_id, pdf_bytes, filename, 'application/pdf', api_key, api_token)
+
+def attach_excel_to_card(card_id, excel_bytes, filename, api_key, api_token):
+    """Attach Excel file to a Trello card"""
+    return attach_file_to_card(card_id, excel_bytes, filename, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', api_key, api_token)
+
+def get_card_attachments(card_id, api_key, api_token):
+    """Get attachments from a Trello card"""
+    url = f"https://api.trello.com/1/cards/{card_id}/attachments"
+    params = {'key': api_key, 'token': api_token}
+    response = requests.get(url, params=params)
+    if response.status_code == 200:
+        return response.json()
+    return []
+
+def get_card_info(card_id, api_key, api_token):
+    """Get card info including name"""
+    url = f"https://api.trello.com/1/cards/{card_id}"
+    params = {'key': api_key, 'token': api_token, 'fields': 'name,desc,shortUrl'}
+    response = requests.get(url, params=params)
+    if response.status_code == 200:
+        return response.json()
+    return None
+
+def download_attachment(url):
+    """Download file from URL"""
+    response = requests.get(url)
+    if response.status_code == 200:
+        return response.content
+    return None
+
+def extract_quote_from_title(title):
+    """Extract quote amount from card title like 'Name - MR# - $325'"""
+    match = re.search(r'\$(\d+)', title)
+    if match:
+        return int(match.group(1))
+    return None
+
+def fill_worksheet_and_generate_pdf(excel_bytes, quote_amount, signature="Ryan Kearl"):
+    """Fill Worksheet tab with hours and generate PDF"""
+    import openpyxl
+    
+    # Calculate hours
+    hours = round(quote_amount / HOURLY_RATE, 2)
+    today_date = datetime.now().strftime("%m/%d/%Y")
+    
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Save Excel
+        excel_path = os.path.join(tmpdir, "workbook.xlsx")
+        with open(excel_path, 'wb') as f:
+            f.write(excel_bytes)
+        
+        # Open and modify
+        try:
+            wb = openpyxl.load_workbook(excel_path)
+            
+            # Find Worksheet tab (might be named differently)
+            ws_names = [s for s in wb.sheetnames if 'WORKSHEET' in s.upper() or 'WORK' in s.upper()]
+            if ws_names:
+                ws = wb[ws_names[0]]
+            else:
+                # Fallback to second sheet
+                ws = wb.worksheets[1] if len(wb.worksheets) > 1 else wb.worksheets[0]
+            
+            # Fill hours in row 6, columns D and I
+            ws['D6'] = hours
+            ws['I6'] = hours
+            
+            # Fill signature and date
+            ws['K19'] = signature
+            ws['K21'] = today_date
+            
+            # Save modified workbook
+            modified_path = os.path.join(tmpdir, "modified.xlsx")
+            wb.save(modified_path)
+            wb.close()
+            
+            # Convert to PDF using LibreOffice
+            result = subprocess.run([
+                'libreoffice', '--headless', '--convert-to', 'pdf',
+                '--outdir', tmpdir, modified_path
+            ], capture_output=True, text=True, timeout=60)
+            
+            pdf_path = os.path.join(tmpdir, "modified.pdf")
+            
+            if os.path.exists(pdf_path):
+                with open(pdf_path, 'rb') as f:
+                    pdf_bytes = f.read()
+                
+                # Extract just the Worksheet page (usually page 2, index 1)
+                try:
+                    reader = PdfReader(BytesIO(pdf_bytes))
+                    writer = PdfWriter()
+                    
+                    # Add only page 2 (Worksheet) if exists, else page 1
+                    if len(reader.pages) > 1:
+                        writer.add_page(reader.pages[1])
+                    else:
+                        writer.add_page(reader.pages[0])
+                    
+                    output = BytesIO()
+                    writer.write(output)
+                    return output.getvalue(), hours
+                except:
+                    return pdf_bytes, hours
+            
+            return None, hours
+            
+        except Exception as e:
+            st.error(f"Error filling worksheet: {e}")
+            return None, hours
 
 # =============================================================================
 # STREAMLIT UI
 # =============================================================================
 
-st.title("🚚 BEP Pricing Calculator v3")
-st.markdown("**Auto-extract machines → Google Maps routing → Quote calculation**")
+# Get Trello credentials once
+trello_key = os.environ.get("TRELLO_API_KEY", "")
+trello_token = os.environ.get("TRELLO_TOKEN", "")
+trello_list = os.environ.get("TRELLO_LIST_ID", "699c9f9d6117bdcbb2d0e0aa")
 
-# Sidebar
+# Sidebar - Page Navigation
 with st.sidebar:
+    st.title("🚚 BEP Tools")
+    page = st.radio("Select Page:", ["📤 New Request", "📝 Generate Quote"], label_visibility="collapsed")
+    
+    st.divider()
+    
     st.header("📋 Pricing Rules")
     st.markdown(f"""
     **Rate:** ${HOURLY_RATE}/hour
@@ -637,208 +758,334 @@ with st.sidebar:
     st.divider()
     
     with st.expander("🔧 Trello Settings", expanded=False):
-        # Pre-fill from environment variables - masked for security
-        trello_key = os.environ.get("TRELLO_API_KEY", "")
-        trello_token = os.environ.get("TRELLO_TOKEN", "")
-        trello_list = os.environ.get("TRELLO_LIST_ID", "699c9f9d6117bdcbb2d0e0aa")
-        
         if trello_key and trello_token:
-            st.success("✅ Trello credentials loaded from environment")
+            st.success("✅ Trello credentials loaded")
         else:
             st.warning("⚠️ Set TRELLO_API_KEY and TRELLO_TOKEN in Railway variables")
 
-# Main content
-st.header("📤 Upload BEP Move Request")
-
-uploaded_file = st.file_uploader(
-    "Drop your BEP Excel file here",
-    type=["xlsx", "xls"],
-    help="Upload the Move Request Excel file"
-)
-
-if uploaded_file:
-    with st.spinner("Parsing Excel file..."):
-        data = parse_bep_excel_v2(uploaded_file)
+# =============================================================================
+# PAGE 2: GENERATE QUOTE PDF
+# =============================================================================
+if page == "📝 Generate Quote":
+    st.title("📝 Generate Quote PDF")
+    st.markdown("**After Ryan approves → Generate QUOTE PDF with filled worksheet**")
     
-    if data["success"]:
-        st.success(f"✅ Extracted {len(data['machines'])} machine(s)")
+    st.divider()
+    
+    # Input: Card URL or ID
+    card_input = st.text_input(
+        "Trello Card URL or ID",
+        placeholder="https://trello.com/c/ABC123 or card ID",
+        help="Paste the Trello card URL or just the card ID"
+    )
+    
+    # Extract card ID from URL
+    card_id = None
+    if card_input:
+        # Handle full URL
+        match = re.search(r'/c/([a-zA-Z0-9]+)', card_input)
+        if match:
+            card_id = match.group(1)
+        else:
+            # Assume it's just the ID
+            card_id = card_input.strip()
+    
+    if card_id and trello_key and trello_token:
+        # Fetch card info
+        card_info = get_card_info(card_id, trello_key, trello_token)
         
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.subheader("📋 Extracted Data")
+        if card_info:
+            st.success(f"✅ Found card: **{card_info.get('name')}**")
             
-            requester = st.text_input("Requester", value=data.get("requester") or "")
-            mr_number = st.text_input("MR Number", value=data.get("mr_number") or "")
-            move_date = st.text_input("Move Date", value=data.get("move_date") or "")
+            # Extract quote from title
+            auto_quote = extract_quote_from_title(card_info.get('name', ''))
             
-            st.markdown("### 🚛 Machines")
+            col1, col2 = st.columns(2)
+            with col1:
+                quote_amount = st.number_input(
+                    "Quote Amount ($)",
+                    min_value=100,
+                    max_value=10000,
+                    value=auto_quote or 300,
+                    step=25
+                )
+            with col2:
+                signature = st.text_input("Signature", value="Ryan Kearl")
             
-            # Editable machine list
-            machines = data.get("machines", [])
-            edited_machines = []
+            # Show calculated hours
+            hours = round(quote_amount / HOURLY_RATE, 2)
+            st.info(f"**Calculated Hours:** {hours} hrs (${quote_amount} ÷ ${HOURLY_RATE})")
             
-            for i, m in enumerate(machines):
-                with st.expander(f"Machine {m.get('number', i+1)}: {m.get('type', 'Vending')}", expanded=True):
-                    pickup = st.text_input(f"Pickup {i+1}", value=m.get("pickup") or "", key=f"pickup_{i}")
-                    delivery = st.text_input(f"Delivery {i+1}", value=m.get("delivery") or "", key=f"delivery_{i}")
-                    mtype = st.text_input(f"Type {i+1}", value=m.get("type") or "Vending", key=f"type_{i}")
-                    
-                    edited_machines.append({
-                        "number": i + 1,
-                        "pickup": pickup,
-                        "pickup_address": normalize_address(pickup),
-                        "delivery": delivery,
-                        "delivery_address": normalize_address(delivery),
-                        "type": mtype
-                    })
+            # Fetch attachments
+            attachments = get_card_attachments(card_id, trello_key, trello_token)
+            excel_attachments = [a for a in attachments if a.get('name', '').endswith(('.xlsx', '.xls'))]
             
-            # Add machine button
-            if st.button("➕ Add Machine"):
-                edited_machines.append({
-                    "number": len(edited_machines) + 1,
-                    "pickup": "",
-                    "pickup_address": "",
-                    "delivery": "",
-                    "delivery_address": "",
-                    "type": "Vending"
-                })
-                st.rerun()
-            
-            other_notes = st.text_area("Other Notes", value=data.get("other_notes") or "", height=100)
-        
-        with col2:
-            st.subheader("🗺️ Route & Quote")
-            
-            # Get unique addresses for routing
-            unique_pickups = list(set([m["pickup"] for m in edited_machines if m.get("pickup")]))
-            unique_deliveries = list(set([m["delivery"] for m in edited_machines if m.get("delivery")]))
-            
-            st.info(f"""
-            **Route:** Gilbert, AZ 85295 → {len(unique_pickups)} pickup(s) → {len(unique_deliveries)} delivery(s) → HQ
-            
-            **Machines:** {len(edited_machines)}
-            """)
-            
-            if st.button("🧮 CALCULATE ROUTE & QUOTE", type="primary", use_container_width=True):
-                if unique_pickups or unique_deliveries:
-                    with st.spinner("Calculating route via Google Maps..."):
-                        route_data = calculate_route(unique_pickups, unique_deliveries)
-                        quote = calculate_quote(route_data, len(edited_machines), unique_pickups, unique_deliveries)
+            if excel_attachments:
+                st.success(f"✅ Found Excel file: **{excel_attachments[0].get('name')}**")
+                
+                if st.button("🧮 Generate QUOTE PDF", type="primary", use_container_width=True):
+                    with st.spinner("Downloading Excel..."):
+                        excel_url = excel_attachments[0].get('url')
+                        # Add auth to URL for Trello attachments
+                        if '?' in excel_url:
+                            excel_url += f"&key={trello_key}&token={trello_token}"
+                        else:
+                            excel_url += f"?key={trello_key}&token={trello_token}"
                         
-                        st.session_state['route_data'] = route_data
-                        st.session_state['quote'] = quote
-                        st.session_state['full_data'] = {
-                            "requester": requester,
-                            "mr_number": mr_number,
-                            "move_date": move_date,
-                            "machines": edited_machines,
-                            "unique_pickups": unique_pickups,
-                            "unique_deliveries": unique_deliveries,
-                            "num_machines": len(edited_machines),
-                            "other_notes": other_notes,
-                            **quote
-                        }
-                else:
-                    st.error("Need at least one pickup or delivery address")
-            
-            # Show results
-            if 'quote' in st.session_state:
-                quote = st.session_state['quote']
-                route = st.session_state['route_data']
-                
-                st.success(f"### 💵 Quote: ${quote['final_price']:,}")
-                
-                # Route details
-                st.markdown("**Route Legs:**")
-                for leg in route['legs']:
-                    est = " ⚠️" if leg.get('estimated') else ""
-                    st.caption(f"• {leg['from'][:30]}... → {leg['to'][:30]}...: {leg['distance_miles']} mi, {leg['duration_minutes']} min{est}")
-                
-                # Indicators
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    if quote['is_tucson']:
-                        st.warning("🌵 Tucson - $850 min")
-                    if quote['is_prison']:
-                        st.warning("🏛️ Prison - $900 min")
-                with col_b:
-                    if quote['buffer_time'] > 0:
-                        st.info(f"📍 Buffer: +{quote['buffer_time']} min (>{BUFFER_THRESHOLD_MILES} mi)")
+                        excel_bytes = download_attachment(excel_url)
+                    
+                    if excel_bytes:
+                        with st.spinner("Filling worksheet & generating PDF..."):
+                            pdf_bytes, calc_hours = fill_worksheet_and_generate_pdf(
+                                excel_bytes, quote_amount, signature
+                            )
+                        
+                        if pdf_bytes:
+                            st.success(f"✅ QUOTE PDF generated! ({calc_hours} hours)")
+                            
+                            # Show download button
+                            st.download_button(
+                                "⬇️ Download QUOTE PDF",
+                                data=pdf_bytes,
+                                file_name=f"QUOTE_{card_id}_{datetime.now().strftime('%Y%m%d')}.pdf",
+                                mime="application/pdf",
+                                use_container_width=True
+                            )
+                            
+                            # Attach to card
+                            if st.button("📎 Attach QUOTE PDF to Card", use_container_width=True):
+                                with st.spinner("Attaching..."):
+                                    filename = f"QUOTE_{datetime.now().strftime('%Y%m%d')}.pdf"
+                                    if attach_pdf_to_card(card_id, pdf_bytes, filename, trello_key, trello_token):
+                                        st.success(f"✅ QUOTE PDF attached to card!")
+                                        st.markdown(f"[Open Card]({card_info.get('shortUrl')})")
+                                    else:
+                                        st.error("Failed to attach PDF")
+                        else:
+                            st.error("Failed to generate PDF")
                     else:
-                        st.info(f"💰 No-buffer discount: -$60")
+                        st.error("Failed to download Excel file")
+            else:
+                st.warning("⚠️ No Excel file found on this card. Upload one first on Page 1.")
+        else:
+            st.error("❌ Card not found. Check the URL/ID.")
+    elif card_id and not (trello_key and trello_token):
+        st.error("⚠️ Trello credentials not configured")
+
+# =============================================================================
+# PAGE 1: NEW REQUEST (Original functionality)
+# =============================================================================
+else:
+    st.title("📤 New Request")
+    st.markdown("**Upload Excel → Calculate quote → Create Trello card**")
+    
+    # Main content
+    st.header("Upload BEP Move Request")
+    
+    uploaded_file = st.file_uploader(
+        "Drop your BEP Excel file here",
+        type=["xlsx", "xls"],
+        help="Upload the Move Request Excel file"
+    )
+    
+    if uploaded_file:
+        # Store Excel bytes for later attachment
+        excel_bytes = uploaded_file.getvalue()
+        excel_name = uploaded_file.name
+        
+        with st.spinner("Parsing Excel file..."):
+            data = parse_bep_excel_v2(uploaded_file)
+        
+        if data["success"]:
+            st.success(f"✅ Extracted {len(data['machines'])} machine(s)")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.subheader("📋 Extracted Data")
                 
-                # Breakdown
-                st.markdown(f"""
-                | Component | Value |
-                |-----------|-------|
-                | Drive Time | {quote['drive_time']} min |
-                | Job Time | {quote['job_time']} min |
-                | Buffer | {quote['buffer_time']} min |
-                | Max Leg Distance | {quote['max_distance_miles']} mi |
-                | **Total** | **{quote['total_hours']} hrs** |
+                requester = st.text_input("Requester", value=data.get("requester") or "")
+                mr_number = st.text_input("MR Number", value=data.get("mr_number") or "")
+                move_date = st.text_input("Move Date", value=data.get("move_date") or "")
+                
+                st.markdown("### 🚛 Machines")
+                
+                # Editable machine list
+                machines = data.get("machines", [])
+                edited_machines = []
+                
+                for i, m in enumerate(machines):
+                    with st.expander(f"Machine {m.get('number', i+1)}: {m.get('type', 'Vending')}", expanded=True):
+                        pickup = st.text_input(f"Pickup {i+1}", value=m.get("pickup") or "", key=f"pickup_{i}")
+                        delivery = st.text_input(f"Delivery {i+1}", value=m.get("delivery") or "", key=f"delivery_{i}")
+                        mtype = st.text_input(f"Type {i+1}", value=m.get("type") or "Vending", key=f"type_{i}")
+                        
+                        edited_machines.append({
+                            "number": i + 1,
+                            "pickup": pickup,
+                            "pickup_address": normalize_address(pickup),
+                            "delivery": delivery,
+                            "delivery_address": normalize_address(delivery),
+                            "type": mtype
+                        })
+                
+                # Add machine button
+                if st.button("➕ Add Machine"):
+                    edited_machines.append({
+                        "number": len(edited_machines) + 1,
+                        "pickup": "",
+                        "pickup_address": "",
+                        "delivery": "",
+                        "delivery_address": "",
+                        "type": "Vending"
+                    })
+                    st.rerun()
+                
+                other_notes = st.text_area("Other Notes", value=data.get("other_notes") or "", height=100)
+            
+            with col2:
+                st.subheader("🗺️ Route & Quote")
+                
+                # Get unique addresses for routing
+                unique_pickups = list(set([m["pickup"] for m in edited_machines if m.get("pickup")]))
+                unique_deliveries = list(set([m["delivery"] for m in edited_machines if m.get("delivery")]))
+                
+                st.info(f"""
+                **Route:** Gilbert, AZ 85295 → {len(unique_pickups)} pickup(s) → {len(unique_deliveries)} delivery(s) → HQ
+                
+                **Machines:** {len(edited_machines)}
                 """)
                 
-                st.caption(f"Formula: {quote['formula']}")
+                if st.button("🧮 CALCULATE ROUTE & QUOTE", type="primary", use_container_width=True):
+                    if unique_pickups or unique_deliveries:
+                        with st.spinner("Calculating route via Google Maps..."):
+                            route_data = calculate_route(unique_pickups, unique_deliveries)
+                            quote = calculate_quote(route_data, len(edited_machines), unique_pickups, unique_deliveries)
+                            
+                            st.session_state['route_data'] = route_data
+                            st.session_state['quote'] = quote
+                            st.session_state['excel_bytes'] = excel_bytes
+                            st.session_state['excel_name'] = excel_name
+                            st.session_state['full_data'] = {
+                                "requester": requester,
+                                "mr_number": mr_number,
+                                "move_date": move_date,
+                                "machines": edited_machines,
+                                "unique_pickups": unique_pickups,
+                                "unique_deliveries": unique_deliveries,
+                                "num_machines": len(edited_machines),
+                                "other_notes": other_notes,
+                                **quote
+                            }
+                    else:
+                        st.error("Need at least one pickup or delivery address")
                 
-                st.divider()
-                
-                # Downloads
-                full_data = st.session_state.get('full_data', {})
-                
-                col_dl1, col_dl2 = st.columns(2)
-                
-                with col_dl1:
-                    if st.button("📋 Convert Excel to PDF", use_container_width=True):
-                        with st.spinner("Converting..."):
-                            pdf = convert_excel_to_pdf(uploaded_file.getvalue(), uploaded_file.name)
-                            if pdf:
-                                pdf = remove_pdf_pages(pdf, [1])
-                                st.session_state['request_pdf'] = pdf
-                                st.success("✅ PDF ready!")
-                
-                with col_dl2:
-                    if 'request_pdf' in st.session_state:
-                        st.download_button(
-                            "⬇️ Download CAPTURE PDF",
-                            data=st.session_state['request_pdf'],
-                            file_name=f"CAPTURE_{mr_number or 'BEP'}_{datetime.now().strftime('%Y%m%d')}.pdf",
-                            mime="application/pdf",
-                            use_container_width=True
-                        )
-                
-                # Trello
-                if trello_key and trello_token:
-                    if st.button("📋 Create Trello Card + Attach PDF", use_container_width=True):
-                        with st.spinner("Creating card..."):
-                            card = create_trello_card(full_data, trello_key, trello_token, trello_list)
-                            if card:
-                                card_id = card.get('id')
-                                st.success(f"✅ Card created: {card.get('shortUrl')}")
-                                
-                                # Attach PDF if available
-                                if 'request_pdf' in st.session_state:
-                                    with st.spinner("Attaching PDF..."):
-                                        pdf_filename = f"CAPTURE_{mr_number or 'BEP'}_{datetime.now().strftime('%Y%m%d')}.pdf"
-                                        if attach_pdf_to_card(card_id, st.session_state['request_pdf'], pdf_filename, trello_key, trello_token):
-                                            st.success("✅ PDF attached!")
+                # Show results
+                if 'quote' in st.session_state:
+                    quote = st.session_state['quote']
+                    route = st.session_state['route_data']
+                    
+                    st.success(f"### 💵 Quote: ${quote['final_price']:,}")
+                    
+                    # Route details
+                    st.markdown("**Route Legs:**")
+                    for leg in route['legs']:
+                        est = " ⚠️" if leg.get('estimated') else ""
+                        st.caption(f"• {leg['from'][:30]}... → {leg['to'][:30]}...: {leg['distance_miles']} mi, {leg['duration_minutes']} min{est}")
+                    
+                    # Indicators
+                    col_a, col_b = st.columns(2)
+                    with col_a:
+                        if quote['is_tucson']:
+                            st.warning("🌵 Tucson - $850 min")
+                        if quote['is_prison']:
+                            st.warning("🏛️ Prison - $900 min")
+                    with col_b:
+                        if quote['buffer_time'] > 0:
+                            st.info(f"📍 Buffer: +{quote['buffer_time']} min (>{BUFFER_THRESHOLD_MILES} mi)")
+                        else:
+                            st.info(f"💰 No-buffer discount: -$60")
+                    
+                    # Breakdown
+                    st.markdown(f"""
+                    | Component | Value |
+                    |-----------|-------|
+                    | Drive Time | {quote['drive_time']} min |
+                    | Job Time | {quote['job_time']} min |
+                    | Buffer | {quote['buffer_time']} min |
+                    | Max Leg Distance | {quote['max_distance_miles']} mi |
+                    | **Total** | **{quote['total_hours']} hrs** |
+                    """)
+                    
+                    st.caption(f"Formula: {quote['formula']}")
+                    
+                    st.divider()
+                    
+                    # Downloads
+                    full_data = st.session_state.get('full_data', {})
+                    
+                    col_dl1, col_dl2 = st.columns(2)
+                    
+                    with col_dl1:
+                        if st.button("📋 Convert Excel to PDF", use_container_width=True):
+                            with st.spinner("Converting..."):
+                                pdf = convert_excel_to_pdf(st.session_state.get('excel_bytes'), st.session_state.get('excel_name', 'request.xlsx'))
+                                if pdf:
+                                    pdf = remove_pdf_pages(pdf, [1])
+                                    st.session_state['request_pdf'] = pdf
+                                    st.success("✅ PDF ready!")
+                    
+                    with col_dl2:
+                        if 'request_pdf' in st.session_state:
+                            st.download_button(
+                                "⬇️ Download CAPTURE PDF",
+                                data=st.session_state['request_pdf'],
+                                file_name=f"CAPTURE_{mr_number or 'BEP'}_{datetime.now().strftime('%Y%m%d')}.pdf",
+                                mime="application/pdf",
+                                use_container_width=True
+                            )
+                    
+                    # Trello
+                    if trello_key and trello_token:
+                        if st.button("📋 Create Trello Card + Attach Files", use_container_width=True):
+                            with st.spinner("Creating card..."):
+                                card = create_trello_card(full_data, trello_key, trello_token, trello_list)
+                                if card:
+                                    card_id = card.get('id')
+                                    st.success(f"✅ Card created: {card.get('shortUrl')}")
+                                    
+                                    # Attach Excel file (needed for Quote generation later)
+                                    with st.spinner("Attaching Excel..."):
+                                        if attach_excel_to_card(card_id, st.session_state.get('excel_bytes'), st.session_state.get('excel_name', 'request.xlsx'), trello_key, trello_token):
+                                            st.success("✅ Excel attached!")
                                         else:
-                                            st.warning("⚠️ Card created but PDF attachment failed")
+                                            st.warning("⚠️ Excel attachment failed")
+                                    
+                                    # Attach PDF if available
+                                    if 'request_pdf' in st.session_state:
+                                        with st.spinner("Attaching CAPTURE PDF..."):
+                                            pdf_filename = f"CAPTURE_{mr_number or 'BEP'}_{datetime.now().strftime('%Y%m%d')}.pdf"
+                                            if attach_pdf_to_card(card_id, st.session_state['request_pdf'], pdf_filename, trello_key, trello_token):
+                                                st.success("✅ CAPTURE PDF attached!")
+                                            else:
+                                                st.warning("⚠️ PDF attachment failed")
+                                    else:
+                                        st.info("💡 Convert Excel to PDF first for CAPTURE attachment")
+                                    
+                                    st.markdown(f"**Next:** After Ryan approves, go to **📝 Generate Quote** page to create QUOTE PDF")
                                 else:
-                                    st.info("💡 Convert Excel to PDF first, then create card to auto-attach")
-                            else:
-                                st.error("Failed to create Trello card")
+                                    st.error("Failed to create Trello card")
+            
+            # Raw data viewer
+            with st.expander("🔍 Raw Excel Data"):
+                st.text("\n".join(data.get("raw_data", [])[:60]))
         
-        # Raw data viewer
-        with st.expander("🔍 Raw Excel Data"):
-            st.text("\n".join(data.get("raw_data", [])[:60]))
+        else:
+            st.error(f"❌ Error: {data.get('error')}")
     
     else:
-        st.error(f"❌ Error: {data.get('error')}")
-
-else:
-    st.info("👆 Upload a BEP Move Request Excel file to get started")
+        st.info("👆 Upload a BEP Move Request Excel file to get started")
 
 # Footer
 st.divider()
-st.caption("BEP Pricing Calculator v3.0 | Google Maps Routing | Tool Box & Safe Moving")
+st.caption("BEP Pricing Calculator v4.0 | Two-Step Workflow | Tool Box & Safe Moving")
