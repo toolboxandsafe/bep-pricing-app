@@ -100,16 +100,24 @@ def parse_bep_excel_v2(uploaded_file):
         for row_idx, row in enumerate(rows):
             row_text = " ".join(row).upper()
             
-            # Find where "Comment" or "Other Notes" section starts - this is END of machine data
-            if "COMMENT" in row_text or "OTHER NOTE" in row_text or "SPECIAL INSTRUCTION" in row_text or "ADDITIONAL NOTE" in row_text:
+            # Find where "Comment" section starts - this is END of machine data
+            if "COMMENT" in row_text:
                 other_notes_row = row_idx
-                # Capture the notes content (might be on same row or next rows)
-                for check_row in rows[row_idx:row_idx+5]:
+                # Capture ALL content below Comments as other_notes
+                notes_lines = []
+                for check_row in rows[row_idx:]:
                     for cell in check_row:
-                        if cell and len(cell) > 20 and 'NAN' not in cell.upper() and 'OTHER NOTE' not in cell.upper():
-                            result["other_notes"] = cell
-                            break
+                        if cell and len(cell) > 3 and 'NAN' not in cell.upper():
+                            # Skip the "Comments:" label itself
+                            if cell.upper().strip() not in ['COMMENT', 'COMMENTS', 'COMMENTS:']:
+                                notes_lines.append(cell.strip())
+                result["other_notes"] = " | ".join(notes_lines) if notes_lines else None
                 break
+            
+            # Also check for "Other Notes" as alternate boundary
+            if "OTHER NOTE" in row_text or "SPECIAL INSTRUCTION" in row_text:
+                if other_notes_row is None:
+                    other_notes_row = row_idx
             
             # Find where machine data starts (first numbered item or "PICK UP" header)
             if machine_section_start is None:
@@ -124,10 +132,34 @@ def parse_bep_excel_v2(uploaded_file):
                     result["mr_number"] = mr_match.group(1)
                     break
         
-        # Find requester (row 47, index 46)
-        if len(rows) > 46:
+        # Find requester - try multiple strategies
+        # Strategy 1: Look for "Requester Name" label and grab adjacent cell
+        for row_idx, row in enumerate(rows):
+            row_text = " ".join(row).upper()
+            if "REQUESTER" in row_text and "NAME" in row_text:
+                # Check row above for the actual name (sometimes name is above label)
+                if row_idx > 0:
+                    for cell in rows[row_idx - 1]:
+                        if cell and len(cell) > 2 and 'NAN' not in cell.upper():
+                            if not any(x in cell.upper() for x in ['REQUESTER', 'DATE', 'SIGNATURE', 'FACILITY']):
+                                result["requester"] = cell
+                                break
+                # Also check same row for name in adjacent cell
+                if not result["requester"]:
+                    for col_idx, cell in enumerate(row):
+                        if "REQUESTER" in cell.upper():
+                            # Get next non-empty cell
+                            for next_cell in row[col_idx+1:]:
+                                if next_cell and len(next_cell) > 2 and 'NAN' not in next_cell.upper():
+                                    result["requester"] = next_cell
+                                    break
+                            break
+                break
+        
+        # Strategy 2: Fallback to row 47 (index 46)
+        if not result["requester"] and len(rows) > 46:
             for cell in rows[46][:4]:
-                if cell and not any(x in cell.upper() for x in ['REQUESTER', 'NAME', 'DATE', 'SIGNATURE', 'NAN']):
+                if cell and len(cell) > 2 and not any(x in cell.upper() for x in ['REQUESTER', 'NAME', 'DATE', 'SIGNATURE', 'NAN']):
                     result["requester"] = cell
                     break
         
