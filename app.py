@@ -591,7 +591,11 @@ def create_trello_card(data, api_key, api_token, list_id):
     }
     
     response = requests.post(url, params=params)
-    return response.json() if response.status_code == 200 else None
+    if response.status_code == 200:
+        return response.json()
+    else:
+        st.error(f"Trello API error {response.status_code}: {response.text}")
+        return None
 
 # =============================================================================
 # STREAMLIT UI
@@ -619,10 +623,11 @@ with st.sidebar:
     
     st.divider()
     
-    with st.expander("🔧 Trello Settings"):
-        trello_key = st.text_input("API Key", type="password")
-        trello_token = st.text_input("API Token", type="password")
-        trello_list = st.text_input("List ID", value="699c9f9d6117bdcbb2d0e0aa")
+    with st.expander("🔧 Trello Settings", expanded=True):
+        # Pre-fill from environment variables if available
+        trello_key = st.text_input("API Key", value=os.environ.get("TRELLO_API_KEY", ""))
+        trello_token = st.text_input("API Token", value=os.environ.get("TRELLO_TOKEN", ""))
+        trello_list = st.text_input("List ID", value=os.environ.get("TRELLO_LIST_ID", "699c9f9d6117bdcbb2d0e0aa"))
 
 # Main content
 st.header("📤 Upload BEP Move Request")
