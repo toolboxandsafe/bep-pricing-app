@@ -1,7 +1,7 @@
 """
 BEP Pricing Calculator - Streamlit Web App
 Tool Box & Safe Moving - Vending Machine Move Pricing
-Replicates Email-to-Trello Workflow
+Replicates Email-to-Trello Workflow with Google Maps Integration
 """
 
 import streamlit as st
@@ -11,7 +11,7 @@ import re
 import subprocess
 import tempfile
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 import pandas as pd
 from io import BytesIO
 from fpdf import FPDF
@@ -25,273 +25,366 @@ st.set_page_config(
     layout="wide"
 )
 
-# Load pricing rules
-@st.cache_data
-def load_pricing_rules():
-    with open("data/pricing_rules.json", "r") as f:
-        return json.load(f)
-
-# Load known locations
-@st.cache_data  
-def load_locations():
-    try:
-        with open("data/known_locations.json", "r") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return {}
-
-rules = load_pricing_rules()
-locations = load_locations()
-
 # Constants
 HQ_ADDRESS = "Gilbert, AZ 85295"
 HOURLY_RATE = 170
 BUFFER_THRESHOLD_MILES = 35
 BUFFER_MINUTES = 20
 JOB_TIME_PER_MACHINE = 30  # minutes
+GOOGLE_MAPS_API_KEY = "AIzaSyDnCiWB4EiXP8nSYVaveMJv367PsmxCFDw"
 
 # =============================================================================
-# ADDRESS DEDUPLICATION
+# EXCEL PARSING - BEP REQUEST TAB (IMPROVED)
 # =============================================================================
 
 def normalize_address(address):
-    """Normalize address for deduplication - extract just the street address"""
+    """Normalize address for deduplication"""
     if not address:
         return ""
     
     addr = str(address).upper().strip()
     
-    # Remove common prefixes like facility names
-    prefixes_to_remove = ['BEP ', 'MAXIMUS ', 'DES ', 'ADES ']
-    for prefix in prefixes_to_remove:
+    # Remove facility prefixes
+    prefixes = ['BEP ', 'MAXIMUS ', 'DES ', 'ADES ', 'DCS ']
+    for prefix in prefixes:
         if addr.startswith(prefix):
             addr = addr[len(prefix):]
     
-    # Remove extra whitespace
-    addr = ' '.join(addr.split())
-    
-    # Extract just street address portion (number + street name)
-    # Look for pattern: number + street name
-    import re
-    street_match = re.search(r'(\d+\s+[A-Z0-9\s\.]+(?:STREET|ST|AVENUE|AVE|BLVD|ROAD|RD|DRIVE|DR|LANE|LN|WAY|PKWY|HWY)[\.]*)', addr)
+    # Extract street address pattern
+    street_match = re.search(r'(\d+\s+[A-Z0-9\s\.]+(?:STREET|ST|AVENUE|AVE|BLVD|ROAD|RD|DRIVE|DR|LANE|LN|WAY|PKWY|HWY|CAMELBACK|WASHINGTON|JEFFERSON|VAN BUREN|INDIAN SCHOOL)[\.]*)', addr)
     if street_match:
         addr = street_match.group(1)
     
-    # Standardize abbreviations
+    # Standardize
     addr = addr.replace(' STREET', ' ST').replace(' AVENUE', ' AVE')
     addr = addr.replace(' BOULEVARD', ' BLVD').replace(' ROAD', ' RD')
-    addr = addr.replace(' DRIVE', ' DR').replace(' LANE', ' LN')
-    addr = addr.replace('.', '').replace(',', '')
+    addr = addr.replace('.', '').replace(',', '').replace('#', ' ')
+    addr = re.sub(r'\s+', ' ', addr).strip()
     
-    # Remove suite/unit numbers for deduplication
-    addr = re.sub(r'\s*#\s*\d+', '', addr)
-    addr = re.sub(r'\s*SUITE\s*\d+', '', addr)
-    addr = re.sub(r'\s*UNIT\s*\d+', '', addr)
-    
-    return addr.strip()
+    return addr
 
-def deduplicate_locations(locations):
-    """Deduplicate locations based on normalized address"""
-    seen_addresses = {}
-    unique_locations = []
-    
-    for loc in locations:
-        if not loc:
-            continue
-        
-        normalized = normalize_address(loc)
-        
-        if normalized and normalized not in seen_addresses:
-            seen_addresses[normalized] = loc
-            unique_locations.append(loc)
-        elif not normalized:
-            # Keep locations without clear addresses (might be facility names)
-            unique_locations.append(loc)
-    
-    return unique_locations
-
-# =============================================================================
-# EXCEL PARSING - BEP REQUEST TAB
-# =============================================================================
-
-def parse_bep_excel(uploaded_file):
-    """Parse BEP Move Request Excel file - extracts from REQUEST tab"""
+def parse_bep_excel_v2(uploaded_file):
+    """
+    Parse BEP Move Request Excel - Extract machines with pickup/delivery pairs
+    Looks for numbered sections (1, 2, 3...) indicating individual machines
+    """
     try:
-        # Try to read REQUEST tab specifically
+        # Read REQUEST tab
         try:
             df = pd.read_excel(uploaded_file, sheet_name='REQUEST', header=None)
         except:
-            # Fallback to first sheet
             df = pd.read_excel(uploaded_file, header=None)
         
-        extracted = {
+        result = {
             "success": True,
             "requester": None,
             "mr_number": None,
-            "pickups": [],
-            "deliveries": [],
-            "num_machines": 0,
-            "machine_types": [],
-            "move_date": None,
+            "machines": [],  # List of {pickup, delivery, type}
             "other_notes": None,
+            "move_date": None,
             "contacts": [],
-            "raw_text": ""
+            "raw_data": []
         }
         
-        # Convert entire sheet to searchable text
-        all_text = []
-        current_section = None
+        # Convert to list of rows for easier processing
+        rows = []
+        for idx, row in df.iterrows():
+            row_data = [str(c).strip() if pd.notna(c) else "" for c in row]
+            rows.append(row_data)
+            result["raw_data"].append(" | ".join([c for c in row_data if c]))
         
-        for row_idx, row in df.iterrows():
-            row_text = " | ".join([str(c) for c in row if pd.notna(c)])
-            all_text.append(row_text)
+        # Find MR number (format: 1XX-XX/XX)
+        for row in rows:
+            for cell in row:
+                mr_match = re.search(r'(1\w{2}-\d{2}/\d{2})', cell)
+                if mr_match:
+                    result["mr_number"] = mr_match.group(1)
+                    break
+        
+        # Find requester (typically row 47, index 46)
+        if len(rows) > 46:
+            for cell in rows[46][:4]:
+                if cell and not any(x in cell.upper() for x in ['REQUESTER', 'NAME', 'DATE', 'SIGNATURE', 'NAN']):
+                    result["requester"] = cell
+                    break
+        
+        # Look for numbered machine sections
+        # Pattern: rows with "1", "2", "3" etc. in first column indicating machine number
+        current_machine = None
+        current_section = None  # 'pickup' or 'delivery'
+        
+        for row_idx, row in enumerate(rows):
+            row_text = " ".join(row).upper()
             
-            for col_idx, cell in enumerate(row):
-                if pd.notna(cell):
-                    cell_str = str(cell).strip()
-                    cell_upper = cell_str.upper()
+            # Check for machine number indicator (standalone number in first columns)
+            for col_idx, cell in enumerate(row[:3]):
+                if cell.strip() in ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10']:
+                    # New machine section
+                    if current_machine:
+                        result["machines"].append(current_machine)
+                    current_machine = {
+                        "number": int(cell.strip()),
+                        "pickup": None,
+                        "pickup_address": None,
+                        "delivery": None, 
+                        "delivery_address": None,
+                        "type": None
+                    }
+                    break
+            
+            # Section detection
+            if "PICK UP" in row_text or "PICKUP" in row_text:
+                current_section = "pickup"
+            elif "DELIVER" in row_text or "DELIVERY" in row_text:
+                current_section = "delivery"
+            elif "OTHER NOTE" in row_text or "SPECIAL" in row_text:
+                current_section = "notes"
+            
+            # Extract addresses/locations
+            if current_machine and current_section in ['pickup', 'delivery']:
+                for cell in row:
+                    if not cell or cell.upper() in ['NAN', 'PICK UP', 'PICKUP', 'DELIVERY', 'DELIVER TO']:
+                        continue
                     
-                    # Get adjacent cell values
-                    next_col = str(row.iloc[col_idx + 1]).strip() if col_idx + 1 < len(row) and pd.notna(row.iloc[col_idx + 1]) else None
-                    prev_row = str(df.iloc[row_idx - 1, col_idx]).strip() if row_idx > 0 and col_idx < len(df.iloc[row_idx - 1]) and pd.notna(df.iloc[row_idx - 1, col_idx]) else None
+                    # Check if this looks like an address or facility
+                    cell_upper = cell.upper()
+                    is_address = any(ind in cell_upper for ind in [
+                        'AVE', 'STREET', 'ST ', 'BLVD', 'ROAD', 'RD ', 'DRIVE', 'DR ', 
+                        'LANE', 'WAY', 'PHOENIX', 'PHX', 'TUCSON', 'MESA', 'TEMPE', 
+                        'GILBERT', 'SCOTTSDALE', 'CHANDLER', 'GLENDALE', 'PEORIA',
+                        'MAXIMUS', 'DES ', 'ADES', 'BEP ', 'DCS'
+                    ])
                     
-                    # MR Number (format: 1XX-XX/XX)
-                    if re.match(r'1\w{2}-\d{2}/\d{2}', cell_str):
-                        extracted["mr_number"] = cell_str
-                    
-                    # Requester Name - check row 47 (index 46)
-                    if row_idx == 46 and col_idx < 3:
-                        if cell_str and not any(x in cell_upper for x in ['REQUESTER', 'NAME', 'DATE', 'SIGNATURE']):
-                            extracted["requester"] = cell_str
-                    
-                    # Section detection
-                    if "PICK UP" in cell_upper or "PICKUP" in cell_upper:
-                        current_section = "pickup"
-                    elif "DELIVER" in cell_upper or "DELIVERY" in cell_upper:
-                        current_section = "delivery"
-                    elif "OTHER NOTE" in cell_upper or "SPECIAL" in cell_upper:
-                        current_section = "notes"
-                    
-                    # Address extraction (look for address patterns)
-                    address_indicators = ['AVE', 'STREET', 'ST.', 'ST ', 'BLVD', 'ROAD', 'RD', 'DRIVE', 'DR.', 'LANE', 'WAY', 'PHOENIX', 'PHX', 'TUCSON', 'MESA', 'TEMPE', 'GILBERT', 'SCOTTSDALE', 'CHANDLER']
-                    if any(ind in cell_upper for ind in address_indicators):
-                        # This looks like an address
-                        if current_section == "pickup" and cell_str not in extracted["pickups"]:
-                            extracted["pickups"].append(cell_str)
-                        elif current_section == "delivery" and cell_str not in extracted["deliveries"]:
-                            extracted["deliveries"].append(cell_str)
-                    
-                    # Site/Location names (often have facility info)
-                    if "SITE" in cell_upper or "LOCATION" in cell_upper or "FACILITY" in cell_upper:
-                        if next_col:
-                            if current_section == "pickup" and next_col not in extracted["pickups"]:
-                                extracted["pickups"].append(next_col)
-                            elif current_section == "delivery" and next_col not in extracted["deliveries"]:
-                                extracted["deliveries"].append(next_col)
-                    
-                    # Machine type detection
-                    machine_keywords = ['VENDING', 'MACHINE', 'KIOSK', 'ATM', 'SNACK', 'SODA', 'COMBO', 'CHANGER', 'FROZEN']
-                    if any(kw in cell_upper for kw in machine_keywords):
-                        if cell_str not in extracted["machine_types"]:
-                            extracted["machine_types"].append(cell_str)
-                    
-                    # Other Notes
-                    if current_section == "notes" and cell_str and len(cell_str) > 10:
-                        extracted["other_notes"] = cell_str
-                    
-                    # Contact info
-                    if "CONTACT" in cell_upper or "PHONE" in cell_upper:
-                        if next_col:
-                            extracted["contacts"].append(next_col)
-                    
-                    # Date
-                    if "DATE" in cell_upper and next_col:
-                        try:
-                            extracted["move_date"] = next_col
-                        except:
-                            pass
+                    if is_address or re.search(r'\d{4,5}\s+[A-Z]', cell_upper):
+                        if current_section == "pickup":
+                            if not current_machine["pickup"]:
+                                current_machine["pickup"] = cell
+                                current_machine["pickup_address"] = normalize_address(cell)
+                        elif current_section == "delivery":
+                            if not current_machine["delivery"]:
+                                current_machine["delivery"] = cell
+                                current_machine["delivery_address"] = normalize_address(cell)
+            
+            # Extract machine type
+            if current_machine:
+                for cell in row:
+                    cell_upper = cell.upper()
+                    if any(kw in cell_upper for kw in ['VENDING', 'COMBO', 'SNACK', 'SODA', 'CHANGER', 'KIOSK', 'FROZEN', 'ATM']):
+                        if not current_machine["type"]:
+                            current_machine["type"] = cell
+            
+            # Other notes
+            if current_section == "notes":
+                for cell in row:
+                    if cell and len(cell) > 15 and 'NAN' not in cell.upper():
+                        result["other_notes"] = cell
         
-        # DEDUPLICATE locations based on normalized addresses
-        extracted["pickups_raw"] = extracted["pickups"].copy()
-        extracted["deliveries_raw"] = extracted["deliveries"].copy()
+        # Don't forget last machine
+        if current_machine:
+            result["machines"].append(current_machine)
         
-        extracted["pickups"] = deduplicate_locations(extracted["pickups"])
-        extracted["deliveries"] = deduplicate_locations(extracted["deliveries"])
+        # If no numbered machines found, try alternate extraction
+        if not result["machines"]:
+            result["machines"] = extract_machines_alternate(rows)
         
-        # Count machines based on pickup/delivery pairs (use raw count before dedup)
-        extracted["num_machines"] = max(
-            len(extracted["pickups_raw"]), 
-            len(extracted["deliveries_raw"]), 
-            1
-        )
+        # Deduplicate machines by address
+        result["unique_pickups"] = list(set([m["pickup_address"] for m in result["machines"] if m.get("pickup_address")]))
+        result["unique_deliveries"] = list(set([m["delivery_address"] for m in result["machines"] if m.get("delivery_address")]))
         
-        # Count unique stops (deduplicated)
-        extracted["unique_stops"] = len(set(
-            [normalize_address(p) for p in extracted["pickups"]] + 
-            [normalize_address(d) for d in extracted["deliveries"]]
-        ))
-        
-        # Store raw text for display
-        extracted["raw_text"] = "\n".join(all_text)
-        
-        # Try alternate requester extraction if not found
-        if not extracted["requester"]:
-            # Look for name patterns in first few rows
-            for row_idx in range(min(5, len(df))):
-                for col_idx in range(min(5, len(df.columns))):
-                    if pd.notna(df.iloc[row_idx, col_idx]):
-                        val = str(df.iloc[row_idx, col_idx]).strip()
-                        # Look for name-like patterns (First Last)
-                        if re.match(r'^[A-Z][a-z]+ [A-Z][a-z]+$', val):
-                            extracted["requester"] = val
-                            break
-        
-        return extracted
+        return result
         
     except Exception as e:
         return {"success": False, "error": str(e)}
 
+def extract_machines_alternate(rows):
+    """Alternate extraction when numbered sections aren't found"""
+    machines = []
+    pickups = []
+    deliveries = []
+    current_section = None
+    
+    for row in rows:
+        row_text = " ".join(row).upper()
+        
+        if "PICK UP" in row_text or "PICKUP" in row_text:
+            current_section = "pickup"
+            continue
+        elif "DELIVER" in row_text or "DELIVERY" in row_text:
+            current_section = "delivery"
+            continue
+        
+        for cell in row:
+            if not cell or cell.upper() == 'NAN':
+                continue
+            cell_upper = cell.upper()
+            
+            is_address = any(ind in cell_upper for ind in [
+                'AVE', 'STREET', 'ST ', 'BLVD', 'RD ', 'DRIVE', 'DR ', 'PHOENIX', 
+                'PHX', 'TUCSON', 'MAXIMUS', 'DES ', 'BEP '
+            ]) or re.search(r'\d{4,5}\s+[A-Z]', cell_upper)
+            
+            if is_address:
+                if current_section == "pickup":
+                    pickups.append(cell)
+                elif current_section == "delivery":
+                    deliveries.append(cell)
+    
+    # Pair pickups with deliveries
+    num_machines = max(len(pickups), len(deliveries), 1)
+    for i in range(num_machines):
+        machines.append({
+            "number": i + 1,
+            "pickup": pickups[i] if i < len(pickups) else None,
+            "pickup_address": normalize_address(pickups[i]) if i < len(pickups) else None,
+            "delivery": deliveries[i] if i < len(deliveries) else None,
+            "delivery_address": normalize_address(deliveries[i]) if i < len(deliveries) else None,
+            "type": None
+        })
+    
+    return machines
+
 # =============================================================================
-# PRICING FUNCTIONS
+# GOOGLE MAPS DISTANCE MATRIX API
 # =============================================================================
 
-def calculate_quote(pickups, deliveries, num_machines, drive_time_minutes, max_distance_miles=None):
-    """Calculate BEP quote following the workflow rules"""
+def get_distance_matrix(origins, destinations):
+    """Call Google Maps Distance Matrix API"""
+    url = "https://maps.googleapis.com/maps/api/distancematrix/json"
     
-    # Drive time (round trip calculation already included if user provides one-way)
-    # The workflow calculates: HQ → Pickups → Deliveries → HQ
-    # User provides total drive time for the route
+    # Use 11am tomorrow for consistent traffic
+    tomorrow_11am = datetime.now().replace(hour=11, minute=0, second=0) + timedelta(days=1)
+    departure_timestamp = int(tomorrow_11am.timestamp())
     
-    total_drive_time = drive_time_minutes
+    params = {
+        "origins": "|".join(origins),
+        "destinations": "|".join(destinations),
+        "key": GOOGLE_MAPS_API_KEY,
+        "departure_time": departure_timestamp,
+        "traffic_model": "optimistic",
+        "units": "imperial"
+    }
+    
+    try:
+        response = requests.get(url, params=params)
+        data = response.json()
+        
+        if data["status"] == "OK":
+            return data
+        else:
+            st.error(f"Google Maps API error: {data.get('status')}")
+            return None
+    except Exception as e:
+        st.error(f"API request failed: {e}")
+        return None
+
+def calculate_route(pickups, deliveries):
+    """
+    Calculate sequential route: HQ → Pickups → Deliveries → HQ
+    Returns list of legs with distance and duration
+    """
+    # Build route
+    route = [HQ_ADDRESS]
+    route.extend(pickups)
+    route.extend(deliveries)
+    route.append(HQ_ADDRESS)
+    
+    legs = []
+    total_duration_minutes = 0
+    max_distance_miles = 0
+    
+    # Calculate each consecutive leg
+    for i in range(len(route) - 1):
+        origin = route[i]
+        destination = route[i + 1]
+        
+        data = get_distance_matrix([origin], [destination])
+        
+        if data and data["rows"][0]["elements"][0]["status"] == "OK":
+            element = data["rows"][0]["elements"][0]
+            
+            # Distance in miles
+            distance_meters = element["distance"]["value"]
+            distance_miles = distance_meters / 1609.34
+            
+            # Duration in minutes (use traffic duration if available)
+            if "duration_in_traffic" in element:
+                duration_seconds = element["duration_in_traffic"]["value"]
+            else:
+                duration_seconds = element["duration"]["value"]
+            duration_minutes = duration_seconds / 60
+            
+            legs.append({
+                "from": origin,
+                "to": destination,
+                "distance_miles": round(distance_miles, 1),
+                "duration_minutes": round(duration_minutes, 1)
+            })
+            
+            total_duration_minutes += duration_minutes
+            max_distance_miles = max(max_distance_miles, distance_miles)
+        else:
+            st.warning(f"Could not calculate: {origin} → {destination}")
+            # Estimate fallback
+            legs.append({
+                "from": origin,
+                "to": destination,
+                "distance_miles": 20,
+                "duration_minutes": 30,
+                "estimated": True
+            })
+            total_duration_minutes += 30
+    
+    return {
+        "legs": legs,
+        "total_duration_minutes": round(total_duration_minutes, 1),
+        "max_distance_miles": round(max_distance_miles, 1),
+        "route": route
+    }
+
+# =============================================================================
+# QUOTE CALCULATION
+# =============================================================================
+
+def calculate_quote(route_data, num_machines, pickups, deliveries):
+    """Calculate BEP quote following workflow rules"""
+    
+    drive_time = route_data["total_duration_minutes"]
+    max_distance = route_data["max_distance_miles"]
     
     # Job time: 30 minutes per machine
     job_time = JOB_TIME_PER_MACHINE * num_machines
     
     # Buffer: 20 minutes if max distance > 35 miles
-    buffer_time = 0
-    if max_distance_miles and max_distance_miles > BUFFER_THRESHOLD_MILES:
+    if max_distance > BUFFER_THRESHOLD_MILES:
         buffer_time = BUFFER_MINUTES
+        no_buffer_discount = 0
+    else:
+        buffer_time = 0
+        no_buffer_discount = 60  # -$60 for short trips
     
     # Total time
-    total_minutes = total_drive_time + job_time + buffer_time
+    total_minutes = drive_time + job_time + buffer_time
     total_hours = total_minutes / 60
     
     # Base price
     base_price = total_hours * HOURLY_RATE
     
-    # Apply minimums
-    min_price = 220  # General minimum
+    # Apply no-buffer discount
+    base_price -= no_buffer_discount
     
-    # Check for Tucson locations
-    all_locations = pickups + deliveries
-    is_tucson = any('TUCSON' in loc.upper() for loc in all_locations if loc)
+    # Check locations for minimums
+    all_locations = " ".join(pickups + deliveries).upper()
+    
+    is_tucson = "TUCSON" in all_locations
+    is_prison = any(kw in all_locations for kw in ['ASPC', 'PRISON', 'CORRECTIONAL', 'CIMARRON', 'FLORENCE'])
+    
+    # Determine minimum
     if is_tucson:
         min_price = 850
-    
-    # Check for prison
-    is_prison = any(kw in str(all_locations).upper() for kw in ['ASPC', 'PRISON', 'CORRECTIONAL', 'CIMARRON'])
-    if is_prison:
-        min_price = max(min_price, 900)
+    elif is_prison:
+        min_price = 900
+    else:
+        min_price = 220
     
     # Apply minimum
     final_price = max(base_price, min_price)
@@ -300,219 +393,51 @@ def calculate_quote(pickups, deliveries, num_machines, drive_time_minutes, max_d
     final_price = math.ceil(final_price / 25) * 25
     
     return {
-        "drive_time": total_drive_time,
+        "drive_time": round(drive_time, 1),
         "job_time": job_time,
         "buffer_time": buffer_time,
-        "total_minutes": total_minutes,
+        "no_buffer_discount": no_buffer_discount,
+        "total_minutes": round(total_minutes, 1),
         "total_hours": round(total_hours, 2),
+        "max_distance_miles": round(max_distance, 1),
         "base_price": round(base_price, 2),
         "min_price": min_price,
         "final_price": int(final_price),
         "is_tucson": is_tucson,
         "is_prison": is_prison,
-        "formula": f"({total_drive_time} + {job_time} + {buffer_time}) ÷ 60 × ${HOURLY_RATE} = ${base_price:.2f}"
+        "formula": f"({round(drive_time)} + {job_time} + {buffer_time}) ÷ 60 × ${HOURLY_RATE} - ${no_buffer_discount} = ${base_price:.0f}"
     }
 
 # =============================================================================
-# PDF GENERATION
-# =============================================================================
-
-def sanitize_for_pdf(text):
-    """Remove or replace characters that cause PDF encoding issues"""
-    if not text:
-        return ""
-    
-    text = str(text)
-    
-    # Replace common problematic characters
-    replacements = {
-        '–': '-',  # en dash
-        '—': '-',  # em dash
-        ''': "'",  # smart quote
-        ''': "'",  # smart quote
-        '"': '"',  # smart quote
-        '"': '"',  # smart quote
-        '…': '...',  # ellipsis
-        '•': '*',  # bullet
-        '\u2022': '*',  # bullet
-        '\u2019': "'",  # right single quote
-        '\u201c': '"',  # left double quote
-        '\u201d': '"',  # right double quote
-        '\xa0': ' ',  # non-breaking space
-    }
-    
-    for old, new in replacements.items():
-        text = text.replace(old, new)
-    
-    # Remove any remaining non-ASCII characters
-    text = text.encode('ascii', 'ignore').decode('ascii')
-    
-    return text
-
-def generate_quote_pdf(data):
-    """Generate professional quote PDF"""
-    pdf = FPDF()
-    pdf.add_page()
-    
-    # Header
-    pdf.set_font('Helvetica', 'B', 24)
-    pdf.set_text_color(0, 102, 204)
-    pdf.cell(0, 15, 'Tool Box & Safe Moving', ln=True, align='C')
-    
-    pdf.set_font('Helvetica', '', 12)
-    pdf.set_text_color(100, 100, 100)
-    pdf.cell(0, 8, 'BEP Vending Machine Move Quote', ln=True, align='C')
-    pdf.cell(0, 6, 'Phone: (602) 935-4209', ln=True, align='C')
-    
-    pdf.ln(10)
-    
-    # Quote amount
-    pdf.set_fill_color(34, 139, 34)
-    pdf.set_text_color(255, 255, 255)
-    pdf.set_font('Helvetica', 'B', 20)
-    pdf.cell(0, 15, f"  QUOTE: ${data.get('final_price', 0):,}", ln=True, fill=True)
-    
-    pdf.ln(5)
-    pdf.set_text_color(0, 0, 0)
-    pdf.set_font('Helvetica', '', 10)
-    pdf.cell(0, 6, f"Date: {datetime.now().strftime('%B %d, %Y')}", ln=True, align='R')
-    
-    pdf.ln(5)
-    
-    # Move Details
-    pdf.set_font('Helvetica', 'B', 12)
-    pdf.set_fill_color(0, 102, 204)
-    pdf.set_text_color(255, 255, 255)
-    pdf.cell(0, 8, '  MOVE DETAILS', ln=True, fill=True)
-    
-    pdf.set_text_color(0, 0, 0)
-    pdf.set_font('Helvetica', '', 10)
-    
-    details = [
-        ('MR Number', sanitize_for_pdf(data.get('mr_number', 'N/A'))),
-        ('Requester', sanitize_for_pdf(data.get('requester', 'N/A'))),
-        ('Move Date', sanitize_for_pdf(data.get('move_date', 'TBD'))),
-        ('Machines', str(data.get('num_machines', 1))),
-    ]
-    
-    for label, value in details:
-        pdf.set_font('Helvetica', 'B', 10)
-        pdf.cell(50, 7, f"{label}:")
-        pdf.set_font('Helvetica', '', 10)
-        pdf.cell(0, 7, sanitize_for_pdf(str(value)) if value else 'N/A', ln=True)
-    
-    # Pickups
-    pdf.ln(3)
-    pdf.set_font('Helvetica', 'B', 10)
-    pdf.cell(0, 7, 'PICKUP LOCATIONS:', ln=True)
-    pdf.set_font('Helvetica', '', 9)
-    for pickup in data.get('pickups', []):
-        pdf.cell(0, 6, f"  - {sanitize_for_pdf(pickup)}", ln=True)
-    
-    # Deliveries
-    pdf.ln(3)
-    pdf.set_font('Helvetica', 'B', 10)
-    pdf.cell(0, 7, 'DELIVERY LOCATIONS:', ln=True)
-    pdf.set_font('Helvetica', '', 9)
-    for delivery in data.get('deliveries', []):
-        pdf.cell(0, 6, f"  - {sanitize_for_pdf(delivery)}", ln=True)
-    
-    pdf.ln(5)
-    
-    # Pricing breakdown
-    pdf.set_font('Helvetica', 'B', 12)
-    pdf.set_fill_color(0, 102, 204)
-    pdf.set_text_color(255, 255, 255)
-    pdf.cell(0, 8, '  PRICING BREAKDOWN', ln=True, fill=True)
-    
-    pdf.set_text_color(0, 0, 0)
-    pdf.set_font('Helvetica', '', 10)
-    
-    pricing = [
-        ('Drive Time', f"{data.get('drive_time', 0)} min"),
-        ('Job Time', f"{data.get('job_time', 0)} min ({data.get('num_machines', 1)} machines × 30 min)"),
-        ('Buffer', f"{data.get('buffer_time', 0)} min"),
-        ('Total Time', f"{data.get('total_hours', 0)} hours"),
-        ('Rate', f"${HOURLY_RATE}/hour"),
-        ('Minimum Applied', f"${data.get('min_price', 220)}"),
-    ]
-    
-    for label, value in pricing:
-        pdf.set_font('Helvetica', '', 10)
-        pdf.cell(50, 6, f"{label}:")
-        pdf.cell(0, 6, str(value), ln=True)
-    
-    pdf.ln(3)
-    pdf.set_font('Helvetica', 'I', 9)
-    pdf.cell(0, 5, f"Formula: {sanitize_for_pdf(data.get('formula', ''))}", ln=True)
-    
-    # Other Notes
-    if data.get('other_notes'):
-        pdf.ln(5)
-        pdf.set_font('Helvetica', 'B', 10)
-        pdf.cell(0, 7, 'NOTES:', ln=True)
-        pdf.set_font('Helvetica', '', 9)
-        pdf.multi_cell(0, 5, sanitize_for_pdf(data.get('other_notes', '')))
-    
-    # Footer
-    pdf.ln(10)
-    pdf.set_font('Helvetica', 'I', 8)
-    pdf.set_text_color(128, 128, 128)
-    pdf.cell(0, 5, 'Quote valid for 30 days. Additional charges may apply for stairs.', ln=True, align='C')
-    
-    # Return as bytes for Streamlit download
-    pdf_output = pdf.output()
-    if isinstance(pdf_output, bytearray):
-        return bytes(pdf_output)
-    elif isinstance(pdf_output, bytes):
-        return pdf_output
-    else:
-        # Fallback: write to BytesIO
-        buffer = BytesIO()
-        pdf.output(buffer)
-        return buffer.getvalue()
-
-# =============================================================================
-# EXCEL TO PDF CONVERSION (LibreOffice)
+# EXCEL TO PDF CONVERSION
 # =============================================================================
 
 def convert_excel_to_pdf(excel_bytes, filename="request.xlsx"):
     """Convert Excel file to PDF using LibreOffice"""
     with tempfile.TemporaryDirectory() as tmpdir:
-        # Save Excel file
         excel_path = os.path.join(tmpdir, filename)
         with open(excel_path, 'wb') as f:
             f.write(excel_bytes)
         
-        # Convert to PDF using LibreOffice
         try:
             result = subprocess.run([
-                'libreoffice',
-                '--headless',
-                '--convert-to', 'pdf',
-                '--outdir', tmpdir,
-                excel_path
+                'libreoffice', '--headless', '--convert-to', 'pdf',
+                '--outdir', tmpdir, excel_path
             ], capture_output=True, text=True, timeout=60)
             
-            # Find the PDF file
             pdf_name = os.path.splitext(filename)[0] + '.pdf'
             pdf_path = os.path.join(tmpdir, pdf_name)
             
             if os.path.exists(pdf_path):
                 with open(pdf_path, 'rb') as f:
                     return f.read()
-            else:
-                st.error(f"PDF not created. LibreOffice output: {result.stderr}")
-                return None
-        except subprocess.TimeoutExpired:
-            st.error("LibreOffice conversion timed out")
             return None
-        except FileNotFoundError:
-            st.error("LibreOffice not installed - using fallback PDF generation")
+        except Exception as e:
+            st.error(f"LibreOffice conversion failed: {e}")
             return None
 
 def remove_pdf_pages(pdf_bytes, pages_to_remove=[1]):
-    """Remove specific pages from PDF (0-indexed). Default removes page 2 (index 1)."""
+    """Remove specific pages from PDF (0-indexed)"""
     try:
         reader = PdfReader(BytesIO(pdf_bytes))
         writer = PdfWriter()
@@ -528,22 +453,6 @@ def remove_pdf_pages(pdf_bytes, pages_to_remove=[1]):
         st.error(f"Error removing pages: {e}")
         return pdf_bytes
 
-def process_excel_to_pdf(uploaded_file):
-    """Full pipeline: Excel → PDF → Remove second page"""
-    # Get file bytes
-    excel_bytes = uploaded_file.getvalue()
-    filename = uploaded_file.name
-    
-    # Convert to PDF
-    pdf_bytes = convert_excel_to_pdf(excel_bytes, filename)
-    
-    if pdf_bytes:
-        # Remove second page (index 1)
-        pdf_bytes = remove_pdf_pages(pdf_bytes, pages_to_remove=[1])
-        return pdf_bytes
-    
-    return None
-
 # =============================================================================
 # TRELLO INTEGRATION
 # =============================================================================
@@ -551,10 +460,19 @@ def process_excel_to_pdf(uploaded_file):
 def create_trello_card(data, api_key, api_token, list_id):
     """Create Trello card with quote data"""
     
-    # Build title: Requester - MR# - $Quote
+    # Build driving stops
+    stops = ["HQ"]
+    for p in data.get("unique_pickups", []):
+        short_name = p.split()[0][:6].upper() if p else "?"
+        stops.append(short_name)
+    for d in data.get("unique_deliveries", []):
+        short_name = d.split()[0][:6].upper() if d else "?"
+        stops.append(short_name)
+    stops.append("HQ")
+    driving_stops = " - ".join(stops)
+    
     title = f"{data.get('requester', 'Unknown')} - {data.get('mr_number', 'BEP')} - ${data.get('final_price', 0)}"
     
-    # Build description
     desc = f"""## Move Request Quote
 
 **MR Number:** {data.get('mr_number', 'N/A')}
@@ -564,11 +482,21 @@ def create_trello_card(data, api_key, api_token, list_id):
 
 ---
 
-### 📍 PICKUP LOCATIONS
-{chr(10).join(['• ' + p for p in data.get('pickups', [])])}
+### 📍 MACHINES & LOCATIONS
+"""
+    
+    for m in data.get("machines", []):
+        desc += f"\n**Machine {m.get('number', '?')}:** {m.get('type', 'Vending')}\n"
+        desc += f"  - Pickup: {m.get('pickup', 'N/A')}\n"
+        desc += f"  - Delivery: {m.get('delivery', 'N/A')}\n"
+    
+    desc += f"""
+---
 
-### 📍 DELIVERY LOCATIONS
-{chr(10).join(['• ' + d for d in data.get('deliveries', [])])}
+### 🚗 DRIVING STOPS
+{driving_stops}
+
+({len(data.get('unique_pickups', [])) + len(data.get('unique_deliveries', []))} unique stops)
 
 ---
 
@@ -576,8 +504,9 @@ def create_trello_card(data, api_key, api_token, list_id):
 
 **Breakdown:**
 - Drive Time: {data.get('drive_time', 0)} min
-- Job Time: {data.get('job_time', 0)} min
+- Job Time: {data.get('job_time', 0)} min ({data.get('num_machines', 1)} machines × 30 min)
 - Buffer: {data.get('buffer_time', 0)} min
+- Max Distance Leg: {data.get('max_distance_miles', 0)} miles
 - Total Hours: {data.get('total_hours', 0)}
 - Rate: ${HOURLY_RATE}/hour
 
@@ -586,13 +515,15 @@ def create_trello_card(data, api_key, api_token, list_id):
 ---
 
 ### 📝 OTHER NOTES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 {data.get('other_notes', 'None')}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 ---
 @luissaravia2
 """
     
-    url = f"https://api.trello.com/1/cards"
+    url = "https://api.trello.com/1/cards"
     params = {
         'key': api_key,
         'token': api_token,
@@ -609,8 +540,8 @@ def create_trello_card(data, api_key, api_token, list_id):
 # STREAMLIT UI
 # =============================================================================
 
-st.title("🚚 BEP Pricing Calculator")
-st.markdown("**Tool Box & Safe Moving** - Upload Excel → Auto-Calculate → Generate Quote")
+st.title("🚚 BEP Pricing Calculator v3")
+st.markdown("**Auto-extract machines → Google Maps routing → Quote calculation**")
 
 # Sidebar
 with st.sidebar:
@@ -619,6 +550,7 @@ with st.sidebar:
     **Rate:** ${HOURLY_RATE}/hour
     **Job Time:** 30 min/machine
     **Buffer:** +20 min if >35 miles
+    **No-buffer discount:** -$60 if ≤35 miles
     
     **Minimums:**
     - General: $220
@@ -630,7 +562,6 @@ with st.sidebar:
     
     st.divider()
     
-    # Trello settings (collapsible)
     with st.expander("🔧 Trello Settings"):
         trello_key = st.text_input("API Key", type="password")
         trello_token = st.text_input("API Token", type="password")
@@ -647,213 +578,174 @@ uploaded_file = st.file_uploader(
 
 if uploaded_file:
     with st.spinner("Parsing Excel file..."):
-        data = parse_bep_excel(uploaded_file)
+        data = parse_bep_excel_v2(uploaded_file)
     
     if data["success"]:
-        st.success("✅ File parsed! Review and edit the extracted data below.")
+        st.success(f"✅ Extracted {len(data['machines'])} machine(s)")
         
-        # Two columns
         col1, col2 = st.columns(2)
         
         with col1:
-            st.subheader("📋 Move Details")
+            st.subheader("📋 Extracted Data")
             
-            requester = st.text_input("Requester Name", value=data.get("requester") or "")
+            requester = st.text_input("Requester", value=data.get("requester") or "")
             mr_number = st.text_input("MR Number", value=data.get("mr_number") or "")
             move_date = st.text_input("Move Date", value=data.get("move_date") or "")
             
-            st.markdown("**Pickup Locations:**")
-            pickups_text = st.text_area(
-                "Pickups (one per line)",
-                value="\n".join(data.get("pickups", [])),
-                height=100
-            )
-            pickups = [p.strip() for p in pickups_text.split("\n") if p.strip()]
+            st.markdown("### 🚛 Machines")
             
-            st.markdown("**Delivery Locations:**")
-            deliveries_text = st.text_area(
-                "Deliveries (one per line)",
-                value="\n".join(data.get("deliveries", [])),
-                height=100
-            )
-            deliveries = [d.strip() for d in deliveries_text.split("\n") if d.strip()]
+            # Editable machine list
+            machines = data.get("machines", [])
+            edited_machines = []
             
-            num_machines = st.number_input(
-                "Number of Machines",
-                min_value=1,
-                max_value=20,
-                value=max(data.get("num_machines", 1), len(pickups), len(deliveries))
-            )
+            for i, m in enumerate(machines):
+                with st.expander(f"Machine {m.get('number', i+1)}: {m.get('type', 'Vending')}", expanded=True):
+                    pickup = st.text_input(f"Pickup {i+1}", value=m.get("pickup") or "", key=f"pickup_{i}")
+                    delivery = st.text_input(f"Delivery {i+1}", value=m.get("delivery") or "", key=f"delivery_{i}")
+                    mtype = st.text_input(f"Type {i+1}", value=m.get("type") or "Vending", key=f"type_{i}")
+                    
+                    edited_machines.append({
+                        "number": i + 1,
+                        "pickup": pickup,
+                        "pickup_address": normalize_address(pickup),
+                        "delivery": delivery,
+                        "delivery_address": normalize_address(delivery),
+                        "type": mtype
+                    })
             
-            other_notes = st.text_area(
-                "Other Notes",
-                value=data.get("other_notes") or "",
-                height=80
-            )
+            # Add machine button
+            if st.button("➕ Add Machine"):
+                edited_machines.append({
+                    "number": len(edited_machines) + 1,
+                    "pickup": "",
+                    "pickup_address": "",
+                    "delivery": "",
+                    "delivery_address": "",
+                    "type": "Vending"
+                })
+                st.rerun()
             
-            # Show deduplication info
-            if data.get("pickups_raw") or data.get("deliveries_raw"):
-                raw_count = len(data.get("pickups_raw", [])) + len(data.get("deliveries_raw", []))
-                dedup_count = len(pickups) + len(deliveries)
-                if raw_count > dedup_count:
-                    st.info(f"📍 **Deduplicated:** {raw_count} locations → {dedup_count} unique stops")
+            other_notes = st.text_area("Other Notes", value=data.get("other_notes") or "", height=100)
         
         with col2:
-            st.subheader("🕐 Drive Time & Quote")
+            st.subheader("🗺️ Route & Quote")
             
-            st.info("""
-            **Route:** Gilbert, AZ → Pickups → Deliveries → Gilbert, AZ
+            # Get unique addresses for routing
+            unique_pickups = list(set([m["pickup"] for m in edited_machines if m.get("pickup")]))
+            unique_deliveries = list(set([m["delivery"] for m in edited_machines if m.get("delivery")]))
             
-            Enter the TOTAL drive time for this route (use Google Maps).
+            st.info(f"""
+            **Route:** Gilbert, AZ 85295 → {len(unique_pickups)} pickup(s) → {len(unique_deliveries)} delivery(s) → HQ
+            
+            **Machines:** {len(edited_machines)}
             """)
             
-            drive_time = st.number_input(
-                "Total Route Drive Time (minutes)",
-                min_value=10,
-                max_value=600,
-                value=120,
-                help="Total driving time for the entire route"
-            )
+            if st.button("🧮 CALCULATE ROUTE & QUOTE", type="primary", use_container_width=True):
+                if unique_pickups or unique_deliveries:
+                    with st.spinner("Calculating route via Google Maps..."):
+                        route_data = calculate_route(unique_pickups, unique_deliveries)
+                        quote = calculate_quote(route_data, len(edited_machines), unique_pickups, unique_deliveries)
+                        
+                        st.session_state['route_data'] = route_data
+                        st.session_state['quote'] = quote
+                        st.session_state['full_data'] = {
+                            "requester": requester,
+                            "mr_number": mr_number,
+                            "move_date": move_date,
+                            "machines": edited_machines,
+                            "unique_pickups": unique_pickups,
+                            "unique_deliveries": unique_deliveries,
+                            "num_machines": len(edited_machines),
+                            "other_notes": other_notes,
+                            **quote
+                        }
+                else:
+                    st.error("Need at least one pickup or delivery address")
             
-            max_distance = st.number_input(
-                "Max Single Leg Distance (miles)",
-                min_value=0,
-                max_value=300,
-                value=40,
-                help="Longest single leg of the trip (for buffer calculation)"
-            )
-            
-            st.divider()
-            
-            # Calculate quote
-            if st.button("🧮 CALCULATE QUOTE", type="primary", use_container_width=True):
-                result = calculate_quote(pickups, deliveries, num_machines, drive_time, max_distance)
+            # Show results
+            if 'quote' in st.session_state:
+                quote = st.session_state['quote']
+                route = st.session_state['route_data']
                 
-                # Store in session state
-                st.session_state['quote_result'] = result
-                st.session_state['quote_data'] = {
-                    "requester": requester,
-                    "mr_number": mr_number,
-                    "move_date": move_date,
-                    "pickups": pickups,
-                    "deliveries": deliveries,
-                    "num_machines": num_machines,
-                    "other_notes": other_notes,
-                    **result
-                }
-            
-            # Show results if calculated
-            if 'quote_result' in st.session_state:
-                result = st.session_state['quote_result']
+                st.success(f"### 💵 Quote: ${quote['final_price']:,}")
                 
-                st.success(f"### 💵 Quote: ${result['final_price']:,}")
+                # Route details
+                st.markdown("**Route Legs:**")
+                for leg in route['legs']:
+                    est = " ⚠️" if leg.get('estimated') else ""
+                    st.caption(f"• {leg['from'][:30]}... → {leg['to'][:30]}...: {leg['distance_miles']} mi, {leg['duration_minutes']} min{est}")
                 
                 # Indicators
                 col_a, col_b = st.columns(2)
                 with col_a:
-                    if result['is_tucson']:
-                        st.warning("🌵 Tucson job - $850 min")
-                    if result['is_prison']:
-                        st.warning("🏛️ Prison job - $900 min")
+                    if quote['is_tucson']:
+                        st.warning("🌵 Tucson - $850 min")
+                    if quote['is_prison']:
+                        st.warning("🏛️ Prison - $900 min")
                 with col_b:
-                    if result['buffer_time'] > 0:
-                        st.info(f"📍 Buffer: +{result['buffer_time']} min")
+                    if quote['buffer_time'] > 0:
+                        st.info(f"📍 Buffer: +{quote['buffer_time']} min (>{BUFFER_THRESHOLD_MILES} mi)")
+                    else:
+                        st.info(f"💰 No-buffer discount: -$60")
                 
                 # Breakdown
                 st.markdown(f"""
                 | Component | Value |
                 |-----------|-------|
-                | Drive Time | {result['drive_time']} min |
-                | Job Time | {result['job_time']} min |
-                | Buffer | {result['buffer_time']} min |
-                | **Total** | **{result['total_hours']} hrs** |
-                | Rate | ${HOURLY_RATE}/hr |
-                | Minimum | ${result['min_price']} |
-                | **QUOTE** | **${result['final_price']}** |
+                | Drive Time | {quote['drive_time']} min |
+                | Job Time | {quote['job_time']} min |
+                | Buffer | {quote['buffer_time']} min |
+                | Max Leg Distance | {quote['max_distance_miles']} mi |
+                | **Total** | **{quote['total_hours']} hrs** |
                 """)
                 
-                st.caption(f"Formula: {result['formula']}")
+                st.caption(f"Formula: {quote['formula']}")
                 
                 st.divider()
                 
-                # Action buttons
-                quote_data = st.session_state.get('quote_data', {})
+                # Downloads
+                full_data = st.session_state.get('full_data', {})
                 
-                # PDF Downloads - Two options
-                col_pdf1, col_pdf2 = st.columns(2)
+                col_dl1, col_dl2 = st.columns(2)
                 
-                with col_pdf1:
-                    # Generated Quote PDF
-                    pdf_bytes = generate_quote_pdf(quote_data)
-                    st.download_button(
-                        "📄 Quote Summary PDF",
-                        data=pdf_bytes,
-                        file_name=f"QUOTE_{mr_number or 'BEP'}_{datetime.now().strftime('%Y%m%d')}.pdf",
-                        mime="application/pdf",
-                        use_container_width=True,
-                        help="Clean quote summary with pricing"
-                    )
-                
-                with col_pdf2:
-                    # Original Excel converted to PDF (first page only)
-                    if st.button("📋 Convert Excel to PDF", use_container_width=True, help="Original REQUEST form as PDF (second page removed)"):
-                        with st.spinner("Converting with LibreOffice..."):
-                            original_pdf = process_excel_to_pdf(uploaded_file)
-                            if original_pdf:
-                                st.session_state['original_pdf'] = original_pdf
+                with col_dl1:
+                    if st.button("📋 Convert Excel to PDF", use_container_width=True):
+                        with st.spinner("Converting..."):
+                            pdf = convert_excel_to_pdf(uploaded_file.getvalue(), uploaded_file.name)
+                            if pdf:
+                                pdf = remove_pdf_pages(pdf, [1])
+                                st.session_state['request_pdf'] = pdf
                                 st.success("✅ PDF ready!")
                 
-                # Show download for converted PDF
-                if 'original_pdf' in st.session_state:
-                    st.download_button(
-                        "⬇️ Download Request PDF",
-                        data=st.session_state['original_pdf'],
-                        file_name=f"REQUEST_{mr_number or 'BEP'}_{datetime.now().strftime('%Y%m%d')}.pdf",
-                        mime="application/pdf",
-                        use_container_width=True
-                    )
+                with col_dl2:
+                    if 'request_pdf' in st.session_state:
+                        st.download_button(
+                            "⬇️ Download CAPTURE PDF",
+                            data=st.session_state['request_pdf'],
+                            file_name=f"CAPTURE_{mr_number or 'BEP'}_{datetime.now().strftime('%Y%m%d')}.pdf",
+                            mime="application/pdf",
+                            use_container_width=True
+                        )
                 
-                # Trello button
+                # Trello
                 if trello_key and trello_token:
                     if st.button("📋 Create Trello Card", use_container_width=True):
-                        card = create_trello_card(quote_data, trello_key, trello_token, trello_list)
+                        card = create_trello_card(full_data, trello_key, trello_token, trello_list)
                         if card:
-                            st.success(f"✅ Trello card created: {card.get('shortUrl')}")
+                            st.success(f"✅ Card created: {card.get('shortUrl')}")
                         else:
                             st.error("Failed to create Trello card")
-                else:
-                    st.info("💡 Add Trello credentials in sidebar to create cards")
         
         # Raw data viewer
-        with st.expander("🔍 View Raw Excel Data"):
-            st.dataframe(pd.read_excel(uploaded_file, header=None).head(60))
+        with st.expander("🔍 Raw Excel Data"):
+            st.text("\n".join(data.get("raw_data", [])[:60]))
     
     else:
         st.error(f"❌ Error: {data.get('error')}")
 
 else:
     st.info("👆 Upload a BEP Move Request Excel file to get started")
-    
-    # Show sample workflow
-    with st.expander("📖 How it works"):
-        st.markdown("""
-        1. **Upload** the BEP Excel file (Move Request worksheet)
-        2. **Review** the auto-extracted data (requester, addresses, machines)
-        3. **Enter** the drive time from Google Maps
-        4. **Calculate** the quote automatically
-        5. **Download** the PDF quote
-        6. **Create** Trello card (optional)
-        
-        **Pricing Formula:**
-        ```
-        (Drive Time + Job Time + Buffer) ÷ 60 × $170/hour
-        ```
-        
-        **Job Time:** 30 minutes per machine
-        **Buffer:** 20 minutes if any leg > 35 miles
-        **Minimums:** $220 general, $850 Tucson, $900 prison
-        """)
 
 # Footer
 st.divider()
-st.caption("BEP Pricing Calculator v2.0 | Tool Box & Safe Moving | Built by Grant")
+st.caption("BEP Pricing Calculator v3.0 | Google Maps Routing | Tool Box & Safe Moving")
