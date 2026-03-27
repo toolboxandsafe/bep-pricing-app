@@ -8,11 +8,15 @@ import streamlit as st
 import json
 import math
 import re
+import subprocess
+import tempfile
+import os
 from datetime import datetime
 import pandas as pd
 from io import BytesIO
 from fpdf import FPDF
 import requests
+from PyPDF2 import PdfReader, PdfWriter
 
 # Page config
 st.set_page_config(
@@ -469,6 +473,78 @@ def generate_quote_pdf(data):
         return buffer.getvalue()
 
 # =============================================================================
+# EXCEL TO PDF CONVERSION (LibreOffice)
+# =============================================================================
+
+def convert_excel_to_pdf(excel_bytes, filename="request.xlsx"):
+    """Convert Excel file to PDF using LibreOffice"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Save Excel file
+        excel_path = os.path.join(tmpdir, filename)
+        with open(excel_path, 'wb') as f:
+            f.write(excel_bytes)
+        
+        # Convert to PDF using LibreOffice
+        try:
+            result = subprocess.run([
+                'libreoffice',
+                '--headless',
+                '--convert-to', 'pdf',
+                '--outdir', tmpdir,
+                excel_path
+            ], capture_output=True, text=True, timeout=60)
+            
+            # Find the PDF file
+            pdf_name = os.path.splitext(filename)[0] + '.pdf'
+            pdf_path = os.path.join(tmpdir, pdf_name)
+            
+            if os.path.exists(pdf_path):
+                with open(pdf_path, 'rb') as f:
+                    return f.read()
+            else:
+                st.error(f"PDF not created. LibreOffice output: {result.stderr}")
+                return None
+        except subprocess.TimeoutExpired:
+            st.error("LibreOffice conversion timed out")
+            return None
+        except FileNotFoundError:
+            st.error("LibreOffice not installed - using fallback PDF generation")
+            return None
+
+def remove_pdf_pages(pdf_bytes, pages_to_remove=[1]):
+    """Remove specific pages from PDF (0-indexed). Default removes page 2 (index 1)."""
+    try:
+        reader = PdfReader(BytesIO(pdf_bytes))
+        writer = PdfWriter()
+        
+        for i, page in enumerate(reader.pages):
+            if i not in pages_to_remove:
+                writer.add_page(page)
+        
+        output = BytesIO()
+        writer.write(output)
+        return output.getvalue()
+    except Exception as e:
+        st.error(f"Error removing pages: {e}")
+        return pdf_bytes
+
+def process_excel_to_pdf(uploaded_file):
+    """Full pipeline: Excel → PDF → Remove second page"""
+    # Get file bytes
+    excel_bytes = uploaded_file.getvalue()
+    filename = uploaded_file.name
+    
+    # Convert to PDF
+    pdf_bytes = convert_excel_to_pdf(excel_bytes, filename)
+    
+    if pdf_bytes:
+        # Remove second page (index 1)
+        pdf_bytes = remove_pdf_pages(pdf_bytes, pages_to_remove=[1])
+        return pdf_bytes
+    
+    return None
+
+# =============================================================================
 # TRELLO INTEGRATION
 # =============================================================================
 
@@ -703,15 +779,39 @@ if uploaded_file:
                 # Action buttons
                 quote_data = st.session_state.get('quote_data', {})
                 
-                # PDF Download
-                pdf_bytes = generate_quote_pdf(quote_data)
-                st.download_button(
-                    "📄 Download Quote PDF",
-                    data=pdf_bytes,
-                    file_name=f"QUOTE_{mr_number or 'BEP'}_{datetime.now().strftime('%Y%m%d')}.pdf",
-                    mime="application/pdf",
-                    use_container_width=True
-                )
+                # PDF Downloads - Two options
+                col_pdf1, col_pdf2 = st.columns(2)
+                
+                with col_pdf1:
+                    # Generated Quote PDF
+                    pdf_bytes = generate_quote_pdf(quote_data)
+                    st.download_button(
+                        "📄 Quote Summary PDF",
+                        data=pdf_bytes,
+                        file_name=f"QUOTE_{mr_number or 'BEP'}_{datetime.now().strftime('%Y%m%d')}.pdf",
+                        mime="application/pdf",
+                        use_container_width=True,
+                        help="Clean quote summary with pricing"
+                    )
+                
+                with col_pdf2:
+                    # Original Excel converted to PDF (first page only)
+                    if st.button("📋 Convert Excel to PDF", use_container_width=True, help="Original REQUEST form as PDF (second page removed)"):
+                        with st.spinner("Converting with LibreOffice..."):
+                            original_pdf = process_excel_to_pdf(uploaded_file)
+                            if original_pdf:
+                                st.session_state['original_pdf'] = original_pdf
+                                st.success("✅ PDF ready!")
+                
+                # Show download for converted PDF
+                if 'original_pdf' in st.session_state:
+                    st.download_button(
+                        "⬇️ Download Request PDF",
+                        data=st.session_state['original_pdf'],
+                        file_name=f"REQUEST_{mr_number or 'BEP'}_{datetime.now().strftime('%Y%m%d')}.pdf",
+                        mime="application/pdf",
+                        use_container_width=True
+                    )
                 
                 # Trello button
                 if trello_key and trello_token:
