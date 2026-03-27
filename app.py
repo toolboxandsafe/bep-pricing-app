@@ -636,11 +636,16 @@ with st.sidebar:
     
     st.divider()
     
-    with st.expander("🔧 Trello Settings", expanded=True):
-        # Pre-fill from environment variables if available
-        trello_key = st.text_input("API Key", value=os.environ.get("TRELLO_API_KEY", ""))
-        trello_token = st.text_input("API Token", value=os.environ.get("TRELLO_TOKEN", ""))
-        trello_list = st.text_input("List ID", value=os.environ.get("TRELLO_LIST_ID", "699c9f9d6117bdcbb2d0e0aa"))
+    with st.expander("🔧 Trello Settings", expanded=False):
+        # Pre-fill from environment variables - masked for security
+        trello_key = os.environ.get("TRELLO_API_KEY", "")
+        trello_token = os.environ.get("TRELLO_TOKEN", "")
+        trello_list = os.environ.get("TRELLO_LIST_ID", "699c9f9d6117bdcbb2d0e0aa")
+        
+        if trello_key and trello_token:
+            st.success("✅ Trello credentials loaded from environment")
+        else:
+            st.warning("⚠️ Set TRELLO_API_KEY and TRELLO_TOKEN in Railway variables")
 
 # Main content
 st.header("📤 Upload BEP Move Request")
