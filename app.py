@@ -308,16 +308,11 @@ def get_distance_matrix(origins, destinations):
     """Call Google Maps Distance Matrix API"""
     url = "https://maps.googleapis.com/maps/api/distancematrix/json"
     
-    # Use 11am tomorrow for consistent traffic
-    tomorrow_11am = datetime.now().replace(hour=11, minute=0, second=0) + timedelta(days=1)
-    departure_timestamp = int(tomorrow_11am.timestamp())
-    
+    # Simple params without departure_time (avoids billing/permission issues)
     params = {
         "origins": "|".join(origins),
         "destinations": "|".join(destinations),
         "key": GOOGLE_MAPS_API_KEY,
-        "departure_time": departure_timestamp,
-        "traffic_model": "optimistic",
         "units": "imperial"
     }
     
@@ -363,11 +358,8 @@ def calculate_route(pickups, deliveries):
             distance_meters = element["distance"]["value"]
             distance_miles = distance_meters / 1609.34
             
-            # Duration in minutes (use traffic duration if available)
-            if "duration_in_traffic" in element:
-                duration_seconds = element["duration_in_traffic"]["value"]
-            else:
-                duration_seconds = element["duration"]["value"]
+            # Duration in minutes
+            duration_seconds = element["duration"]["value"]
             duration_minutes = duration_seconds / 60
             
             legs.append({
