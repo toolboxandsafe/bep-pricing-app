@@ -100,8 +100,8 @@ def parse_bep_excel_v2(uploaded_file):
         for row_idx, row in enumerate(rows):
             row_text = " ".join(row).upper()
             
-            # Find where "Other Notes" section starts - this is END of machine data
-            if "OTHER NOTE" in row_text or "SPECIAL INSTRUCTION" in row_text or "ADDITIONAL NOTE" in row_text:
+            # Find where "Comment" or "Other Notes" section starts - this is END of machine data
+            if "COMMENT" in row_text or "OTHER NOTE" in row_text or "SPECIAL INSTRUCTION" in row_text or "ADDITIONAL NOTE" in row_text:
                 other_notes_row = row_idx
                 # Capture the notes content (might be on same row or next rows)
                 for check_row in rows[row_idx:row_idx+5]:
