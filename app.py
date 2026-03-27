@@ -166,46 +166,43 @@ def parse_bep_excel_v2(uploaded_file):
                         }
                         break
             
-            # Section detection
-            if "PICK UP" in row_text or "PICKUP" in row_text:
-                current_section = "pickup"
-            elif "DELIVER" in row_text or "DELIVERY" in row_text:
-                current_section = "delivery"
+            # Extract data based on EXACT row labels
+            # "Pick up site:" row contains pickup address
+            # "Delivery site:" row contains delivery address  
+            # "Items to be moved" row contains machine type (NOT an address)
             
-            # Extract addresses (only if we have a current machine and valid section)
-            if current_machine and current_section in ['pickup', 'delivery']:
-                for cell in row:
-                    if not cell or len(cell) < 5:
-                        continue
-                    cell_upper = cell.upper()
-                    
-                    # Skip labels
-                    if cell_upper in ['NAN', 'PICK UP', 'PICKUP', 'DELIVERY', 'DELIVER TO', 'SITE', 'LOCATION']:
-                        continue
-                    
-                    # Check for address indicators
-                    is_address = any(ind in cell_upper for ind in [
-                        'AVE', 'STREET', 'ST ', 'BLVD', 'ROAD', 'RD ', 'DRIVE', 'DR ',
-                        'LANE', 'WAY', 'PHOENIX', 'PHX', 'TUCSON', 'MESA', 'TEMPE',
-                        'GILBERT', 'SCOTTSDALE', 'CHANDLER', 'GLENDALE', 'PEORIA',
-                        'MAXIMUS', 'DES ', 'ADES', 'BEP ', 'DCS', 'CIVIC'
-                    ]) or re.search(r'\d{3,5}\s+[A-Z]', cell_upper)
-                    
-                    if is_address:
-                        if current_section == "pickup" and not current_machine["pickup"]:
-                            current_machine["pickup"] = cell
-                            current_machine["pickup_address"] = normalize_address(cell)
-                        elif current_section == "delivery" and not current_machine["delivery"]:
-                            current_machine["delivery"] = cell
-                            current_machine["delivery_address"] = normalize_address(cell)
-            
-            # Extract machine type
             if current_machine:
-                for cell in row:
-                    cell_upper = cell.upper()
-                    if any(kw in cell_upper for kw in ['VENDING', 'COMBO', 'SNACK', 'SODA', 'CHANGER', 'KIOSK', 'FROZEN', 'ATM']):
-                        if not current_machine["type"]:
-                            current_machine["type"] = cell
+                for col_idx, cell in enumerate(row):
+                    cell_upper = cell.upper() if cell else ""
+                    
+                    # PICKUP ADDRESS: Look for "Pick up site" label, grab address from same row
+                    if "PICK UP SITE" in cell_upper or "PICKUP SITE" in cell_upper:
+                        # Address should be in next cell(s) on same row
+                        for addr_cell in row[col_idx+1:]:
+                            if addr_cell and len(addr_cell) > 5 and 'NAN' not in addr_cell.upper():
+                                if not current_machine["pickup"]:
+                                    current_machine["pickup"] = addr_cell
+                                    current_machine["pickup_address"] = normalize_address(addr_cell)
+                                break
+                    
+                    # DELIVERY ADDRESS: Look for "Delivery site" label, grab address from same row
+                    elif "DELIVERY SITE" in cell_upper or "DELIVER SITE" in cell_upper or "DELIVER TO" in cell_upper:
+                        # Address should be in next cell(s) on same row
+                        for addr_cell in row[col_idx+1:]:
+                            if addr_cell and len(addr_cell) > 5 and 'NAN' not in addr_cell.upper():
+                                if not current_machine["delivery"]:
+                                    current_machine["delivery"] = addr_cell
+                                    current_machine["delivery_address"] = normalize_address(addr_cell)
+                                break
+                    
+                    # MACHINE TYPE: Look for "Items to be moved" label, grab type from same row
+                    elif "ITEM" in cell_upper and "MOVE" in cell_upper:
+                        # Machine type should be in next cell(s) on same row
+                        for type_cell in row[col_idx+1:]:
+                            if type_cell and len(type_cell) > 2 and 'NAN' not in type_cell.upper():
+                                if not current_machine["type"]:
+                                    current_machine["type"] = type_cell
+                                break
         
         # Add last machine if valid
         if current_machine and (current_machine.get("pickup") or current_machine.get("delivery")):
