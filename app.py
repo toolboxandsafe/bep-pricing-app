@@ -146,8 +146,8 @@ def parse_bep_excel_v2(uploaded_file):
             row = rows[row_idx]
             row_text = " ".join(row).upper()
             
-            # Skip if we've hit other notes
-            if "OTHER NOTE" in row_text:
+            # STOP parsing if we've hit Comments or Other Notes section
+            if "COMMENT" in row_text or "OTHER NOTE" in row_text:
                 break
             
             # Check for machine number (must be in specific column position, not random numbers)
@@ -170,11 +170,18 @@ def parse_bep_excel_v2(uploaded_file):
                         }
                         break
             
-            # Section detection
-            if "PICK UP" in row_text or "PICKUP" in row_text:
+            # Section detection - be specific about what we're looking for
+            # "Pick up site" = address section, "Pick up site POC" = contact person (skip)
+            if ("PICK UP SITE" in row_text or "PICKUP SITE" in row_text) and "POC" not in row_text:
                 current_section = "pickup"
-            elif "DELIVER" in row_text or "DELIVERY" in row_text:
+            elif ("DELIVER" in row_text and "SITE" in row_text) and "POC" not in row_text:
                 current_section = "delivery"
+            elif "POC" in row_text or "CONTACT" in row_text or "PHONE" in row_text:
+                # This is a contact person row, not an address - skip this section
+                current_section = "contact_skip"
+            elif "ITEM" in row_text and "MOVE" in row_text:
+                # "Items to be moved" section - these are machine types, not addresses
+                current_section = "items_skip"
             
             # Extract addresses (only if we have a current machine and valid section)
             if current_machine and current_section in ['pickup', 'delivery']:
@@ -183,17 +190,31 @@ def parse_bep_excel_v2(uploaded_file):
                         continue
                     cell_upper = cell.upper()
                     
-                    # Skip labels
-                    if cell_upper in ['NAN', 'PICK UP', 'PICKUP', 'DELIVERY', 'DELIVER TO', 'SITE', 'LOCATION']:
+                    # Skip labels and non-address content
+                    skip_terms = [
+                        'NAN', 'PICK UP', 'PICKUP', 'DELIVERY', 'DELIVER TO', 'SITE', 
+                        'LOCATION', 'POC', 'CONTACT', 'PHONE', 'EMAIL', 'FAX',
+                        'VENDING', 'MACHINE', 'COMBO', 'SNACK', 'SODA', 'CHANGER',
+                        'KIOSK', 'FROZEN', 'ATM', 'ITEM', 'MOVE'
+                    ]
+                    if any(term in cell_upper for term in skip_terms):
                         continue
                     
-                    # Check for address indicators
-                    is_address = any(ind in cell_upper for ind in [
-                        'AVE', 'STREET', 'ST ', 'BLVD', 'ROAD', 'RD ', 'DRIVE', 'DR ',
-                        'LANE', 'WAY', 'PHOENIX', 'PHX', 'TUCSON', 'MESA', 'TEMPE',
-                        'GILBERT', 'SCOTTSDALE', 'CHANDLER', 'GLENDALE', 'PEORIA',
-                        'MAXIMUS', 'DES ', 'ADES', 'BEP ', 'DCS', 'CIVIC'
-                    ]) or re.search(r'\d{3,5}\s+[A-Z]', cell_upper)
+                    # Must have actual address indicators (street number + street type or facility name)
+                    has_street_number = re.search(r'\d{3,5}\s+[A-Z]', cell_upper)
+                    has_street_type = any(st in cell_upper for st in [
+                        ' AVE', ' AVENUE', ' STREET', ' ST ', ' BLVD', ' ROAD', ' RD ',
+                        ' DRIVE', ' DR ', ' LANE', ' LN ', ' WAY', ' PKWY'
+                    ])
+                    has_facility = any(fac in cell_upper for fac in [
+                        'MAXIMUS', 'DES ', 'ADES', 'BEP ', 'DCS', 'CIVIC', 'CENTER'
+                    ])
+                    has_city = any(city in cell_upper for city in [
+                        'PHOENIX', 'PHX', 'TUCSON', 'MESA', 'TEMPE', 'GILBERT',
+                        'SCOTTSDALE', 'CHANDLER', 'GLENDALE', 'PEORIA'
+                    ])
+                    
+                    is_address = (has_street_number and has_street_type) or has_facility or (has_street_number and has_city)
                     
                     if is_address:
                         if current_section == "pickup" and not current_machine["pickup"]:
