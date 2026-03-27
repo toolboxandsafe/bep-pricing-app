@@ -857,30 +857,43 @@ if page == "📝 Generate Quote":
                             )
                         
                         if pdf_bytes:
+                            # Store in session state for persistence
+                            st.session_state['quote_pdf'] = pdf_bytes
+                            st.session_state['quote_pdf_card_id'] = card_id
+                            st.session_state['quote_pdf_card_url'] = card_info.get('shortUrl')
+                            st.session_state['quote_pdf_hours'] = calc_hours
                             st.success(f"✅ QUOTE PDF generated! ({calc_hours} hours)")
-                            
-                            # Show download button
-                            st.download_button(
-                                "⬇️ Download QUOTE PDF",
-                                data=pdf_bytes,
-                                file_name=f"QUOTE_{card_id}_{datetime.now().strftime('%Y%m%d')}.pdf",
-                                mime="application/pdf",
-                                use_container_width=True
-                            )
-                            
-                            # Attach to card
-                            if st.button("📎 Attach QUOTE PDF to Card", use_container_width=True):
-                                with st.spinner("Attaching..."):
-                                    filename = f"QUOTE_{datetime.now().strftime('%Y%m%d')}.pdf"
-                                    if attach_pdf_to_card(card_id, pdf_bytes, filename, trello_key, trello_token):
-                                        st.success(f"✅ QUOTE PDF attached to card!")
-                                        st.markdown(f"[Open Card]({card_info.get('shortUrl')})")
-                                    else:
-                                        st.error("Failed to attach PDF")
                         else:
                             st.error("Failed to generate PDF")
                     else:
                         st.error("Failed to download Excel file")
+                
+                # Show PDF options if generated
+                if 'quote_pdf' in st.session_state and st.session_state.get('quote_pdf_card_id') == card_id:
+                    st.success(f"✅ QUOTE PDF ready! ({st.session_state.get('quote_pdf_hours', '')} hours)")
+                    
+                    col_a, col_b = st.columns(2)
+                    
+                    with col_a:
+                        st.download_button(
+                            "⬇️ Download QUOTE PDF",
+                            data=st.session_state['quote_pdf'],
+                            file_name=f"QUOTE_{card_id}_{datetime.now().strftime('%Y%m%d')}.pdf",
+                            mime="application/pdf",
+                            use_container_width=True
+                        )
+                    
+                    with col_b:
+                        if st.button("📎 Attach to Trello Card", use_container_width=True):
+                            with st.spinner("Attaching..."):
+                                filename = f"QUOTE_{datetime.now().strftime('%Y%m%d')}.pdf"
+                                if attach_pdf_to_card(card_id, st.session_state['quote_pdf'], filename, trello_key, trello_token):
+                                    st.success(f"✅ QUOTE PDF attached!")
+                                    st.markdown(f"[Open Card]({st.session_state.get('quote_pdf_card_url')})")
+                                    # Clear the session state
+                                    del st.session_state['quote_pdf']
+                                else:
+                                    st.error("Failed to attach PDF")
             else:
                 st.warning("⚠️ No Excel file found on this card. Upload one first on Page 1.")
         else:
