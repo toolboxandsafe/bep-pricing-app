@@ -31,7 +31,7 @@ HOURLY_RATE = 170
 BUFFER_THRESHOLD_MILES = 35
 BUFFER_MINUTES = 20
 JOB_TIME_PER_MACHINE = 30  # minutes
-GOOGLE_MAPS_API_KEY = "AIzaSyDnCiWB4EiXP8nSYVaveMJv367PsmxCFDw"
+GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY", "")
 
 # =============================================================================
 # EXCEL PARSING - BEP REQUEST TAB (IMPROVED)
