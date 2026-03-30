@@ -1,17 +1,628 @@
 {
   "version": "1.0",
-  "created": "2026-03-29T20:30:00",
-  "updated": "2026-03-29T20:30:00",
-  "quotes": [],
+  "created": "2026-03-29T20:45:00",
+  "updated": "2026-03-29T21:08:02.479783",
+  "quotes": [
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Rob INV10418 move sunset point, once new machine is ready to deploy $750 change ",
+      "original_quote": 750,
+      "final_price": 800,
+      "adjustment": 50,
+      "adjustment_pct": 6.7,
+      "locations": [],
+      "comments": ".",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Becky INV10405 MR 1NP-05/84 ASPC Tucson Training Building 47 $1000 change to $50",
+      "original_quote": 1000,
+      "final_price": 500,
+      "adjustment": -500,
+      "adjustment_pct": -50.0,
+      "locations": [
+        "tucson",
+        "prison"
+      ],
+      "comments": "777037522A1",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Rob INV10404 Urgent move order to be completed COB 1-29-26 $450 Ryan said $400 7",
+      "original_quote": 450,
+      "final_price": 400,
+      "adjustment": -50,
+      "adjustment_pct": -11.1,
+      "locations": [],
+      "comments": "",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Becky INV10400 MR & WO 1VR-05/98 Vista Del Camino Park $300 change to $380 77703",
+      "original_quote": 300,
+      "final_price": 380,
+      "adjustment": 80,
+      "adjustment_pct": 26.7,
+      "locations": [],
+      "comments": "777037427A1",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Becky INV10395 MR & WO 1VR-05/98 MVD North $400 change to $440 it's far up n. Sc",
+      "original_quote": 400,
+      "final_price": 440,
+      "adjustment": 40,
+      "adjustment_pct": 10.0,
+      "locations": [
+        "scottsdale"
+      ],
+      "comments": "it's far up n. Scottsdale",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Rob INV10390 move at Valencia PO Tucson on 01-14-26 $850 change to $900 77703742",
+      "original_quote": 850,
+      "final_price": 900,
+      "adjustment": 50,
+      "adjustment_pct": 5.9,
+      "locations": [
+        "tucson"
+      ],
+      "comments": "777037421A1",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Casey INV10381 move request/ Norris Williams for Ryan $850 change to $940 777037",
+      "original_quote": 850,
+      "final_price": 940,
+      "adjustment": 90,
+      "adjustment_pct": 10.6,
+      "locations": [],
+      "comments": "777037272A1",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Casey INV10378 move request for Michael Birnbaum for Ryan $350 change to $400 SS",
+      "original_quote": 350,
+      "final_price": 400,
+      "adjustment": 50,
+      "adjustment_pct": 14.3,
+      "locations": [],
+      "comments": "SSA",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Casey INV10377 move request for Michael Birnbaum for Ryan $400 change to $540 MC",
+      "original_quote": 400,
+      "final_price": 540,
+      "adjustment": 140,
+      "adjustment_pct": 35.0,
+      "locations": [],
+      "comments": "MCKELLIPS SUBSTATION",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Casey INV10376 move request for ryan $260 change to 240 777037184A1",
+      "original_quote": 260,
+      "final_price": 240,
+      "adjustment": -20,
+      "adjustment_pct": -7.7,
+      "locations": [],
+      "comments": "777037184A1",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Casey INV10374 move request for Ryan /joe  baloo $1000 change to $900 777037188A",
+      "original_quote": 1000,
+      "final_price": 900,
+      "adjustment": -100,
+      "adjustment_pct": -10.0,
+      "locations": [],
+      "comments": "777037188A1",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Rob INV10373 MO for mesa gateway library from Maximus hopefully Tuesday 11-25-25",
+      "original_quote": 220,
+      "final_price": 250,
+      "adjustment": 30,
+      "adjustment_pct": 13.6,
+      "locations": [
+        "maximus"
+      ],
+      "comments": "777037204A1",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "SEE NOTES Rob INV10369 move from maximus to LPOE Douglas $2500 change to $2800 7",
+      "original_quote": 2500,
+      "final_price": 2800,
+      "adjustment": 300,
+      "adjustment_pct": 12.0,
+      "locations": [
+        "border",
+        "maximus"
+      ],
+      "comments": "777037114A1",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Rob INV10334 MO and WO for microwave stand in Dan Matts office $220 change to $1",
+      "original_quote": 220,
+      "final_price": 180,
+      "adjustment": -40,
+      "adjustment_pct": -18.2,
+      "locations": [],
+      "comments": "777036948A1",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Rob INV10330 2 move orders A $260 change to $350 777036903A1",
+      "original_quote": 260,
+      "final_price": 350,
+      "adjustment": 90,
+      "adjustment_pct": 34.6,
+      "locations": [],
+      "comments": "777036903A1",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Casey INV10336 move request for Ryan: Tempe community development bldg $200 chan",
+      "original_quote": 200,
+      "final_price": 280,
+      "adjustment": 80,
+      "adjustment_pct": 40.0,
+      "locations": [],
+      "comments": "777036836A1",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Rob INV10331 2 move orders B $220 change to $250 777036901A1",
+      "original_quote": 220,
+      "final_price": 250,
+      "adjustment": 30,
+      "adjustment_pct": 13.6,
+      "locations": [],
+      "comments": "777036901A1",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Rob INV10317 install of Crane MM2 combo and removal of DN3800 and AMS 39 snack $",
+      "original_quote": 400,
+      "final_price": 450,
+      "adjustment": 50,
+      "adjustment_pct": 12.5,
+      "locations": [],
+      "comments": "777036553A1 SEE NOTES",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Rob INV10315 3 part Bevell move $600 change to $510 777036785A1",
+      "original_quote": 600,
+      "final_price": 510,
+      "adjustment": -90,
+      "adjustment_pct": -15.0,
+      "locations": [
+        "bevell"
+      ],
+      "comments": "777036785A1",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Rob INV 10301 pickup of DN501E at Surprise City Courts Ryan $400 change to $350 ",
+      "original_quote": 400,
+      "final_price": 350,
+      "adjustment": -50,
+      "adjustment_pct": -12.5,
+      "locations": [],
+      "comments": "777036726A1",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Becky INV10286 MR 1NC-10/15 Juvenile Probation $300 change to $400 777036517A1",
+      "original_quote": 300,
+      "final_price": 400,
+      "adjustment": 100,
+      "adjustment_pct": 33.3,
+      "locations": [],
+      "comments": "777036517A1",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Casey INV10284 move request maximus to thomas o price in tucson, and work order ",
+      "original_quote": 900,
+      "final_price": 400,
+      "adjustment": -500,
+      "adjustment_pct": -55.6,
+      "locations": [
+        "tucson",
+        "maximus"
+      ],
+      "comments": "777036525A1",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Casey INV10285 move request for Ryan/to be done week of Aug. 11th $750 change to",
+      "original_quote": 750,
+      "final_price": 1000,
+      "adjustment": 250,
+      "adjustment_pct": 33.3,
+      "locations": [
+        "prison"
+      ],
+      "comments": "since it's a prison",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Casey INV10283 move request maximus to legal services tucson, and work order for",
+      "original_quote": 900,
+      "final_price": 400,
+      "adjustment": -500,
+      "adjustment_pct": -55.6,
+      "locations": [
+        "tucson",
+        "maximus"
+      ],
+      "comments": "777036520A1",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Rob INV 10280 remove V721 from site $220 change to $250 777036518A1",
+      "original_quote": 220,
+      "final_price": 250,
+      "adjustment": 30,
+      "adjustment_pct": 13.6,
+      "locations": [],
+      "comments": "777036518A1",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Rob INV 10300 Ryan install DE300987 at AIB once completed at Maximus $300 change",
+      "original_quote": 300,
+      "final_price": 320,
+      "adjustment": 20,
+      "adjustment_pct": 6.7,
+      "locations": [
+        "maximus"
+      ],
+      "comments": "777036554A1",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Casey INV10296 Priority move request for Ryan, mid next week/Michael Birnbaum $2",
+      "original_quote": 220,
+      "final_price": 250,
+      "adjustment": 30,
+      "adjustment_pct": 13.6,
+      "locations": [],
+      "comments": "777036638A1",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Becky INV 10261 MR 1NC-10/15 From Victory to Maximus $200 change to $170 7770363",
+      "original_quote": 200,
+      "final_price": 170,
+      "adjustment": -30,
+      "adjustment_pct": -15.0,
+      "locations": [
+        "maximus"
+      ],
+      "comments": "777036396A1",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Casey INV 10255 move request stericycle/Birenbaum $500 -change to 400 777036363A",
+      "original_quote": 500,
+      "final_price": 400,
+      "adjustment": -100,
+      "adjustment_pct": -20.0,
+      "locations": [],
+      "comments": "777036363A1",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Casey INV 10253 move request for Tuesday 7/8, LaDonna for Eyman prison $500 chan",
+      "original_quote": 500,
+      "final_price": 600,
+      "adjustment": 100,
+      "adjustment_pct": 20.0,
+      "locations": [
+        "prison"
+      ],
+      "comments": "777036208A1",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Casey INV 10251 move request for Thursday 7/1, los reales landfill $750 change t",
+      "original_quote": 750,
+      "final_price": 200,
+      "adjustment": -550,
+      "adjustment_pct": -73.3,
+      "locations": [],
+      "comments": "777036207A1",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Rob INV 10249 casa grande court cottonwood lane machine swap out $550 change to ",
+      "original_quote": 550,
+      "final_price": 400,
+      "adjustment": -150,
+      "adjustment_pct": -27.3,
+      "locations": [],
+      "comments": "I am combining",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Casey INV 10252 move request for Scottsdale civic library/Michael Birenbaum $350",
+      "original_quote": 350,
+      "final_price": 330,
+      "adjustment": -20,
+      "adjustment_pct": -5.7,
+      "locations": [
+        "scottsdale"
+      ],
+      "comments": "777036201A1",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Rob INV 10244 Move FBI HQ to victory Bevell $350 change to $400 N PHX 777036102A",
+      "original_quote": 350,
+      "final_price": 400,
+      "adjustment": 50,
+      "adjustment_pct": 14.3,
+      "locations": [
+        "bevell"
+      ],
+      "comments": "N PHX",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Rob INV 10241 pick up of Crooks combo SW Regional Courts Avondale $200 change to",
+      "original_quote": 200,
+      "final_price": 250,
+      "adjustment": 50,
+      "adjustment_pct": 25.0,
+      "locations": [],
+      "comments": "777036100A1",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Rob INV 10239 move of 3 machines to Washington rec, 2 from victory, 1 from maxim",
+      "original_quote": 400,
+      "final_price": 450,
+      "adjustment": 50,
+      "adjustment_pct": 12.5,
+      "locations": [
+        "maximus"
+      ],
+      "comments": "777036101A1",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Casey INV 10236 Az superior court/pima county move $850 change to $300 since I'm",
+      "original_quote": 850,
+      "final_price": 300,
+      "adjustment": -550,
+      "adjustment_pct": -64.7,
+      "locations": [],
+      "comments": "since I'm combining MORE S TUC",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Casey INV 10234 Move request DCS Tucson/Joe Baloo $950 change to 500 since I'm c",
+      "original_quote": 950,
+      "final_price": 500,
+      "adjustment": -450,
+      "adjustment_pct": -47.4,
+      "locations": [
+        "tucson"
+      ],
+      "comments": "since I'm combining this",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Casey INV 10229 move request for Michael Birenbaum/ventura post office $550 chan",
+      "original_quote": 550,
+      "final_price": 400,
+      "adjustment": -150,
+      "adjustment_pct": -27.3,
+      "locations": [],
+      "comments": "777035987A1",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Rob 2 assets from BEP to VA site by November 8 $250 change to $300 777034682A1 I",
+      "original_quote": 250,
+      "final_price": 300,
+      "adjustment": 50,
+      "adjustment_pct": 20.0,
+      "locations": [],
+      "comments": "777034682A1 INVOICE # 10093",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Lisa Rob 2 moves Yasir for Ryan B $700 change to 600 777035948A1 INVOICE # 10218",
+      "original_quote": 700,
+      "final_price": 600,
+      "adjustment": -100,
+      "adjustment_pct": -14.3,
+      "locations": [],
+      "comments": "777035948A1 INVOICE # 10218",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Rob INV 10226 chain of several moves for Armstrong Mesa sites $1100 change to $1",
+      "original_quote": 1100,
+      "final_price": 1500,
+      "adjustment": 400,
+      "adjustment_pct": 36.4,
+      "locations": [],
+      "comments": "777035947A1",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Rob INV 10225 move of 4 total machines Bevell $500 change to $550 777035945A1",
+      "original_quote": 500,
+      "final_price": 550,
+      "adjustment": 50,
+      "adjustment_pct": 10.0,
+      "locations": [
+        "bevell"
+      ],
+      "comments": "777035945A1",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Rob INV 10224 Hi Lisa, I also need this move approved as the pool opens this wee",
+      "original_quote": 400,
+      "final_price": 450,
+      "adjustment": 50,
+      "adjustment_pct": 12.5,
+      "locations": [],
+      "comments": "777035954A1",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Rob INV 10223 2 machine move valley maximus to valley metro $250 change to $280 ",
+      "original_quote": 250,
+      "final_price": 280,
+      "adjustment": 30,
+      "adjustment_pct": 12.0,
+      "locations": [
+        "maximus"
+      ],
+      "comments": "777035961A1",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Lisa Rob INV 10221 2 moves Yasir for Ryan C $700 change to 600 777035949A1 SEE N",
+      "original_quote": 700,
+      "final_price": 600,
+      "adjustment": -100,
+      "adjustment_pct": -14.3,
+      "locations": [],
+      "comments": "777035949A1 SEE NOTES",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "ROB INV 10220 onsite move Mansel carter Park $200 change to 170 since it's just ",
+      "original_quote": 200,
+      "final_price": 170,
+      "adjustment": -30,
+      "adjustment_pct": -15.0,
+      "locations": [],
+      "comments": "since it's just going there",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Casey INVOICE # 10214 move request DCS Tucson *approved by Lisa* limited 4 day d",
+      "original_quote": 800,
+      "final_price": 940,
+      "adjustment": 140,
+      "adjustment_pct": 17.5,
+      "locations": [
+        "tucson"
+      ],
+      "comments": "777035892A1",
+      "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-03-29T00:00:00",
+      "card_name": "Casey INV 10217 move request san Xavier sub station Tucson *approved by Lia* lim",
+      "original_quote": 800,
+      "final_price": 950,
+      "adjustment": 150,
+      "adjustment_pct": 18.8,
+      "locations": [
+        "tucson"
+      ],
+      "comments": "777035891A1",
+      "source": "historical_trello"
+    }
+  ],
   "location_stats": {
-    "far_scottsdale": {"count": 12, "total_diff": 540, "avg_diff": 45},
-    "prison": {"count": 15, "total_diff": 1125, "avg_diff": 75},
-    "border": {"count": 5, "total_diff": 1500, "avg_diff": 300},
-    "tucson_delivery": {"count": 8, "total_diff": 400, "avg_diff": 50},
-    "rest_area": {"count": 4, "total_diff": 320, "avg_diff": 80}
+    "tucson": {
+      "count": 7,
+      "total_diff": -1610,
+      "avg_diff": -230
+    },
+    "prison": {
+      "count": 3,
+      "total_diff": -150,
+      "avg_diff": -50
+    },
+    "scottsdale": {
+      "count": 2,
+      "total_diff": 20,
+      "avg_diff": 10
+    },
+    "maximus": {
+      "count": 8,
+      "total_diff": -600,
+      "avg_diff": -75
+    },
+    "border": {
+      "count": 1,
+      "total_diff": 300,
+      "avg_diff": 300
+    },
+    "bevell": {
+      "count": 3,
+      "total_diff": 10,
+      "avg_diff": 3
+    }
   },
-  "total_quotes": 0,
-  "total_adjustments": 0,
-  "avg_adjustment": 0,
-  "notes": "Seeded with data from BEP_PRICING_RULEBOOK.md (413 jobs analyzed)"
+  "total_quotes": 49,
+  "total_adjustments": 49,
+  "adjustments_up": 29,
+  "adjustments_down": 20,
+  "avg_adjustment": -29.59,
+  "notes": "Imported from historical Trello cards with price corrections"
 }
