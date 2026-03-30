@@ -62,8 +62,8 @@ def get_recent_emails_with_excel(mail, limit=10):
         _, message_numbers = mail.search(None, "ALL")
         message_list = message_numbers[0].split()
         
-        # Get last 50 emails to search through
-        recent_messages = message_list[-50:] if len(message_list) > 50 else message_list
+        # Get last 100 emails to search through
+        recent_messages = message_list[-100:] if len(message_list) > 100 else message_list
         recent_messages.reverse()  # Most recent first
         
         for num in recent_messages:
@@ -915,7 +915,7 @@ if page == "📧 From Email":
             
             # Fetch recent emails with Excel
             with st.spinner("Fetching recent emails with Excel attachments..."):
-                emails = get_recent_emails_with_excel(mail, limit=10)
+                emails = get_recent_emails_with_excel(mail, limit=20)
             
             if emails:
                 st.markdown(f"### Found {len(emails)} email(s) with Excel attachments")
