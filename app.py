@@ -1232,7 +1232,11 @@ if page == "📧 From Email":
                         data = parse_bep_excel_v2(uploaded_file)
                     
                     if data['success']:
-                        st.success(f"✅ Extracted {len(data['machines'])} machine(s)")
+                        num_machines = len(data.get('machines', []))
+                        if num_machines > 0:
+                            st.success(f"✅ Extracted {num_machines} machine(s)")
+                        else:
+                            st.warning("⚠️ No machines found in Excel. Check if this is a Move Request file with pickup/delivery addresses.")
                         
                         col1, col2 = st.columns(2)
                         
@@ -1251,7 +1255,10 @@ if page == "📧 From Email":
                             unique_pickups = list(set([m["pickup"] for m in data.get('machines', []) if m.get("pickup")]))
                             unique_deliveries = list(set([m["delivery"] for m in data.get('machines', []) if m.get("delivery")]))
                             
-                            if st.button("🧮 Calculate Quote", type="primary", use_container_width=True):
+                            if not unique_pickups and not unique_deliveries:
+                                st.error("❌ No pickup or delivery addresses found. Cannot calculate quote.")
+                                st.info("This Excel may be a Work Order only (no Move Request data).")
+                            elif st.button("🧮 Calculate Quote", type="primary", use_container_width=True):
                                 with st.spinner("Calculating route..."):
                                     route_data = calculate_route(unique_pickups, unique_deliveries)
                                     quote = calculate_quote(route_data, len(data.get('machines', [])), unique_pickups, unique_deliveries)
