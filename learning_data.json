@@ -1,0 +1,17 @@
+{
+  "version": "1.0",
+  "created": "2026-03-29T20:30:00",
+  "updated": "2026-03-29T20:30:00",
+  "quotes": [],
+  "location_stats": {
+    "far_scottsdale": {"count": 12, "total_diff": 540, "avg_diff": 45},
+    "prison": {"count": 15, "total_diff": 1125, "avg_diff": 75},
+    "border": {"count": 5, "total_diff": 1500, "avg_diff": 300},
+    "tucson_delivery": {"count": 8, "total_diff": 400, "avg_diff": 50},
+    "rest_area": {"count": 4, "total_diff": 320, "avg_diff": 80}
+  },
+  "total_quotes": 0,
+  "total_adjustments": 0,
+  "avg_adjustment": 0,
+  "notes": "Seeded with data from BEP_PRICING_RULEBOOK.md (413 jobs analyzed)"
+}

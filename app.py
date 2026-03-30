@@ -32,6 +32,190 @@ st.set_page_config(
 HQ_ADDRESS = "Gilbert, AZ 85295"
 HOURLY_RATE = 170
 
+# Learning Data File
+LEARNING_DATA_FILE = "learning_data.json"
+
+# Location adjustments from BEP Pricing Rulebook (413 jobs analyzed)
+LOCATION_ADJUSTMENTS = {
+    "far_scottsdale": {"keywords": ["north scottsdale", "n scottsdale", "n. scottsdale", "mvd north"], "adjustment": 50},
+    "far_phoenix": {"keywords": ["north phoenix", "n phoenix", "anthem", "cave creek"], "adjustment": 40},
+    "west_valley": {"keywords": ["peoria", "glendale", "surprise", "goodyear", "buckeye"], "adjustment": 35},
+    "tucson_delivery": {"keywords": ["tucson"], "min_price": 850},
+    "prison": {"keywords": ["aspc", "prison", "lewis", "perryville", "florence", "cimarron"], "adjustment": 100, "min_price": 900},
+    "border": {"keywords": ["douglas", "lpoe", "san luis", "yuma border"], "adjustment": 500, "min_price": 1500},
+    "rest_area": {"keywords": ["rest area", "rest stop", "sunset point"], "adjustment": 80},
+}
+
+# =============================================================================
+# LEARNING DATA FUNCTIONS
+# =============================================================================
+
+def load_learning_data():
+    """Load learning data from JSON file"""
+    try:
+        if os.path.exists(LEARNING_DATA_FILE):
+            with open(LEARNING_DATA_FILE, 'r') as f:
+                return json.load(f)
+    except Exception as e:
+        st.warning(f"Could not load learning data: {e}")
+    
+    # Return default structure
+    return {
+        "version": "1.0",
+        "created": datetime.now().isoformat(),
+        "quotes": [],
+        "location_stats": {},
+        "total_quotes": 0,
+        "total_adjustments": 0,
+        "avg_adjustment": 0
+    }
+
+def save_learning_data(data):
+    """Save learning data to JSON file"""
+    try:
+        data["updated"] = datetime.now().isoformat()
+        with open(LEARNING_DATA_FILE, 'w') as f:
+            json.dump(data, f, indent=2)
+        return True
+    except Exception as e:
+        st.error(f"Could not save learning data: {e}")
+        return False
+
+def log_quote_feedback(original_quote, final_price, card_name, locations, comments=""):
+    """Log feedback when quote differs from final price"""
+    data = load_learning_data()
+    
+    diff = final_price - original_quote
+    
+    # Create quote record
+    quote_record = {
+        "timestamp": datetime.now().isoformat(),
+        "card_name": card_name,
+        "original_quote": original_quote,
+        "final_price": final_price,
+        "adjustment": diff,
+        "adjustment_pct": round((diff / original_quote) * 100, 1) if original_quote > 0 else 0,
+        "locations": locations,
+        "comments": comments
+    }
+    
+    data["quotes"].append(quote_record)
+    data["total_quotes"] += 1
+    
+    if diff != 0:
+        data["total_adjustments"] += 1
+    
+    # Update location stats
+    for loc in locations:
+        loc_lower = loc.lower()
+        for loc_type, loc_info in LOCATION_ADJUSTMENTS.items():
+            for keyword in loc_info.get("keywords", []):
+                if keyword in loc_lower:
+                    if loc_type not in data["location_stats"]:
+                        data["location_stats"][loc_type] = {"count": 0, "total_diff": 0, "avg_diff": 0}
+                    data["location_stats"][loc_type]["count"] += 1
+                    data["location_stats"][loc_type]["total_diff"] += diff
+                    data["location_stats"][loc_type]["avg_diff"] = round(
+                        data["location_stats"][loc_type]["total_diff"] / data["location_stats"][loc_type]["count"]
+                    )
+    
+    # Update average adjustment
+    all_diffs = [q["adjustment"] for q in data["quotes"]]
+    data["avg_adjustment"] = round(sum(all_diffs) / len(all_diffs), 2) if all_diffs else 0
+    
+    save_learning_data(data)
+    return diff
+
+def get_smart_adjustment(pickup_locations, delivery_locations):
+    """Get smart price adjustment based on learned data and rulebook"""
+    adjustment = 0
+    min_price = 220  # Default minimum
+    reasons = []
+    
+    all_locations = pickup_locations + delivery_locations
+    location_text = " ".join(all_locations).lower()
+    
+    for loc_type, loc_info in LOCATION_ADJUSTMENTS.items():
+        for keyword in loc_info.get("keywords", []):
+            if keyword in location_text:
+                if "adjustment" in loc_info:
+                    adjustment += loc_info["adjustment"]
+                    reasons.append(f"{loc_type}: +${loc_info['adjustment']}")
+                if "min_price" in loc_info:
+                    min_price = max(min_price, loc_info["min_price"])
+                    reasons.append(f"{loc_type}: min ${loc_info['min_price']}")
+                break  # Only apply once per location type
+    
+    # Check learned adjustments
+    data = load_learning_data()
+    for loc_type, stats in data.get("location_stats", {}).items():
+        if stats["count"] >= 3 and abs(stats["avg_diff"]) > 20:
+            # If we have enough data and consistent adjustments, apply learned adjustment
+            for keyword in LOCATION_ADJUSTMENTS.get(loc_type, {}).get("keywords", []):
+                if keyword in location_text:
+                    learned_adj = stats["avg_diff"]
+                    if learned_adj > 0:
+                        adjustment += int(learned_adj * 0.5)  # Apply 50% of learned adjustment
+                        reasons.append(f"learned({loc_type}): +${int(learned_adj * 0.5)}")
+                    break
+    
+    return adjustment, min_price, reasons
+
+def extract_original_quote_from_desc(description):
+    """Extract original calculated quote from card description"""
+    if not description:
+        return None
+    
+    # Look for the marker we add
+    match = re.search(r'\[CALC_QUOTE:(\d+)\]', description)
+    if match:
+        return int(match.group(1))
+    
+    # Fallback: look for quote in description
+    match = re.search(r'###\s*💰\s*QUOTE:\s*\$?([\d,]+)', description)
+    if match:
+        return int(match.group(1).replace(',', ''))
+    
+    return None
+
+def extract_locations_from_desc(description):
+    """Extract pickup and delivery locations from card description"""
+    locations = []
+    if not description:
+        return locations
+    
+    # Find pickup locations
+    pickups = re.findall(r'Pickup:\s*(.+?)(?:\n|$)', description)
+    locations.extend(pickups)
+    
+    # Find delivery locations  
+    deliveries = re.findall(r'Delivery:\s*(.+?)(?:\n|$)', description)
+    locations.extend(deliveries)
+    
+    return locations
+
+def get_card_comments(card_id, api_key, api_token):
+    """Get comments from a Trello card"""
+    url = f"https://api.trello.com/1/cards/{card_id}/actions"
+    params = {
+        'key': api_key,
+        'token': api_token,
+        'filter': 'commentCard'
+    }
+    try:
+        response = requests.get(url, params=params)
+        if response.status_code == 200:
+            actions = response.json()
+            comments = []
+            for action in actions:
+                if action.get('type') == 'commentCard':
+                    comment_text = action.get('data', {}).get('text', '')
+                    comments.append(comment_text)
+            return comments
+    except Exception as e:
+        pass
+    return []
+
 # Gmail IMAP settings
 GMAIL_USER = os.environ.get("GMAIL_USER", "grantworks2026@gmail.com")
 GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
@@ -494,7 +678,7 @@ def calculate_route(pickups, deliveries):
 # =============================================================================
 
 def calculate_quote(route_data, num_machines, pickups, deliveries):
-    """Calculate BEP quote following workflow rules"""
+    """Calculate BEP quote following workflow rules with smart adjustments"""
     
     drive_time = route_data["total_duration_minutes"]
     max_distance = route_data["max_distance_miles"]
@@ -534,8 +718,15 @@ def calculate_quote(route_data, num_machines, pickups, deliveries):
     else:
         min_price = 220
     
+    # Get smart adjustments from learning system
+    smart_adjustment, smart_min, adjustment_reasons = get_smart_adjustment(pickups, deliveries)
+    min_price = max(min_price, smart_min)
+    
     # Apply minimum
     final_price = max(base_price, min_price)
+    
+    # Add smart adjustment
+    final_price += smart_adjustment
     
     # Round UP to nearest $25
     final_price = math.ceil(final_price / 25) * 25
@@ -553,7 +744,9 @@ def calculate_quote(route_data, num_machines, pickups, deliveries):
         "final_price": int(final_price),
         "is_tucson": is_tucson,
         "is_prison": is_prison,
-        "formula": f"({round(drive_time)} + {job_time} + {buffer_time}) ÷ 60 × ${HOURLY_RATE} - ${no_buffer_discount} = ${base_price:.0f}"
+        "smart_adjustment": smart_adjustment,
+        "adjustment_reasons": adjustment_reasons,
+        "formula": f"({round(drive_time)} + {job_time} + {buffer_time}) ÷ 60 × ${HOURLY_RATE} - ${no_buffer_discount} + ${smart_adjustment} (smart) = ${final_price:.0f}"
     }
 
 # =============================================================================
@@ -673,6 +866,8 @@ def create_trello_card(data, api_key, api_token, list_id):
 
 ---
 @luissaravia2
+
+[CALC_QUOTE:{data.get('final_price', 0)}]
 """
     
     url = "https://api.trello.com/1/cards"
@@ -861,7 +1056,7 @@ trello_list = os.environ.get("TRELLO_LIST_ID", "699c9f9d6117bdcbb2d0e0aa")
 # Sidebar - Page Navigation
 with st.sidebar:
     st.title("🚚 BEP Tools")
-    page = st.radio("Select Page:", ["📤 New Request", "📧 From Email", "📝 Generate Quote"], label_visibility="collapsed")
+    page = st.radio("Select Page:", ["📤 New Request", "📧 From Email", "📝 Generate Quote", "📊 Learning Data"], label_visibility="collapsed")
     
     st.divider()
     
@@ -984,6 +1179,11 @@ if page == "📧 From Email":
                                 st.success(f"### 💵 Quote: ${quote['final_price']:,}")
                                 st.caption(f"Drive: {quote['drive_time']}min + Job: {quote['job_time']}min + Buffer: {quote['buffer_time']}min")
                                 
+                                # Show smart adjustments if any
+                                if quote.get('smart_adjustment', 0) != 0:
+                                    reasons = quote.get('adjustment_reasons', [])
+                                    st.info(f"📊 **Smart Adjustment:** +${quote['smart_adjustment']} ({', '.join(reasons)})")
+                                
                                 # Build full title
                                 full_title = f"{requester} - {card_title} - ${quote['final_price']}" if requester else f"{card_title} - ${quote['final_price']}"
                                 st.text_input("Final Card Title", value=full_title, key="final_title")
@@ -1075,8 +1275,23 @@ elif page == "📝 Generate Quote":
         if card_info:
             st.success(f"✅ Found card: **{card_info.get('name')}**")
             
-            # Extract quote from title
+            # Extract quote from title (Ryan's final price)
             auto_quote = extract_quote_from_title(card_info.get('name', ''))
+            
+            # Extract original calculated quote from description
+            original_quote = extract_original_quote_from_desc(card_info.get('desc', ''))
+            locations = extract_locations_from_desc(card_info.get('desc', ''))
+            
+            # Show learning feedback if there's a difference
+            if original_quote and auto_quote and original_quote != auto_quote:
+                diff = auto_quote - original_quote
+                diff_pct = round((diff / original_quote) * 100, 1)
+                if diff > 0:
+                    st.warning(f"📊 **Price Adjustment Detected:** Original ${original_quote} → Final ${auto_quote} (**+${diff}**, +{diff_pct}%)")
+                else:
+                    st.info(f"📊 **Price Adjustment Detected:** Original ${original_quote} → Final ${auto_quote} (**${diff}**, {diff_pct}%)")
+            elif original_quote and auto_quote and original_quote == auto_quote:
+                st.success(f"✅ **Price Match:** Calculated ${original_quote} = Final ${auto_quote}")
             
             col1, col2 = st.columns(2)
             with col1:
@@ -1146,6 +1361,23 @@ elif page == "📝 Generate Quote":
                                 if attach_pdf_to_card(card_id, st.session_state['quote_pdf'], filename, trello_key, trello_token):
                                     st.success(f"✅ QUOTE PDF attached!")
                                     st.markdown(f"[Open Card]({st.session_state.get('quote_pdf_card_url')})")
+                                    
+                                    # Log feedback for learning system
+                                    if original_quote:
+                                        comments = get_card_comments(card_id, trello_key, trello_token)
+                                        comment_text = " | ".join(comments) if comments else ""
+                                        diff = log_quote_feedback(
+                                            original_quote=original_quote,
+                                            final_price=quote_amount,
+                                            card_name=card_info.get('name', ''),
+                                            locations=locations,
+                                            comments=comment_text
+                                        )
+                                        if diff != 0:
+                                            st.info(f"📊 Logged price adjustment: ${diff:+d} (learning system updated)")
+                                        else:
+                                            st.info("📊 Logged: Quote matched (no adjustment)")
+                                    
                                     # Clear the session state
                                     del st.session_state['quote_pdf']
                                 else:
@@ -1156,6 +1388,114 @@ elif page == "📝 Generate Quote":
             st.error("❌ Card not found. Check the URL/ID.")
     elif card_id and not (trello_key and trello_token):
         st.error("⚠️ Trello credentials not configured")
+
+# =============================================================================
+# PAGE 4: LEARNING DATA
+# =============================================================================
+elif page == "📊 Learning Data":
+    st.title("📊 Learning Data")
+    st.markdown("**View and manage the pricing learning system**")
+    
+    st.divider()
+    
+    # Load learning data
+    data = load_learning_data()
+    
+    # Summary stats
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Total Quotes", data.get("total_quotes", 0))
+    with col2:
+        st.metric("Adjustments", data.get("total_adjustments", 0))
+    with col3:
+        pct = round((data.get("total_adjustments", 0) / max(data.get("total_quotes", 1), 1)) * 100, 1)
+        st.metric("Adjustment Rate", f"{pct}%")
+    with col4:
+        st.metric("Avg Adjustment", f"${data.get('avg_adjustment', 0):+.0f}")
+    
+    st.divider()
+    
+    # Location stats
+    st.subheader("📍 Location-Based Adjustments")
+    loc_stats = data.get("location_stats", {})
+    if loc_stats:
+        loc_df = pd.DataFrame([
+            {"Location Type": k, "Count": v["count"], "Avg Adjustment": f"${v['avg_diff']:+d}"}
+            for k, v in loc_stats.items()
+        ])
+        st.dataframe(loc_df, use_container_width=True, hide_index=True)
+    else:
+        st.info("No location-specific data yet. Process some quotes to build learning data.")
+    
+    st.divider()
+    
+    # Recent quotes
+    st.subheader("📜 Recent Quote History")
+    quotes = data.get("quotes", [])
+    if quotes:
+        # Show last 20 quotes
+        recent = quotes[-20:][::-1]  # Reverse to show newest first
+        
+        for q in recent:
+            adj = q.get("adjustment", 0)
+            if adj > 0:
+                icon = "🔺"
+                color = "orange"
+            elif adj < 0:
+                icon = "🔻"
+                color = "blue"
+            else:
+                icon = "✅"
+                color = "green"
+            
+            with st.expander(f"{icon} {q.get('card_name', 'Unknown')[:50]}... | ${q.get('original_quote', 0)} → ${q.get('final_price', 0)} ({adj:+d})"):
+                st.write(f"**Original Quote:** ${q.get('original_quote', 0)}")
+                st.write(f"**Final Price:** ${q.get('final_price', 0)}")
+                st.write(f"**Adjustment:** ${adj:+d} ({q.get('adjustment_pct', 0):+.1f}%)")
+                st.write(f"**Timestamp:** {q.get('timestamp', 'N/A')}")
+                if q.get('comments'):
+                    st.write(f"**Comments:** {q.get('comments')}")
+                if q.get('locations'):
+                    st.write(f"**Locations:** {', '.join(q.get('locations', []))[:100]}...")
+    else:
+        st.info("No quotes logged yet. Generate some QUOTE PDFs to start learning.")
+    
+    st.divider()
+    
+    # Raw JSON view
+    with st.expander("🔧 Raw Learning Data (JSON)"):
+        st.json(data)
+    
+    # Download link
+    st.download_button(
+        "⬇️ Download Learning Data (JSON)",
+        data=json.dumps(data, indent=2),
+        file_name=f"learning_data_{datetime.now().strftime('%Y%m%d')}.json",
+        mime="application/json"
+    )
+    
+    # Reset option (with confirmation)
+    st.divider()
+    with st.expander("⚠️ Danger Zone"):
+        st.warning("This will delete all learning data and start fresh.")
+        if st.button("🗑️ Reset Learning Data", type="secondary"):
+            if st.session_state.get('confirm_reset'):
+                # Actually reset
+                save_learning_data({
+                    "version": "1.0",
+                    "created": datetime.now().isoformat(),
+                    "quotes": [],
+                    "location_stats": {},
+                    "total_quotes": 0,
+                    "total_adjustments": 0,
+                    "avg_adjustment": 0
+                })
+                st.success("Learning data reset!")
+                st.session_state['confirm_reset'] = False
+                st.rerun()
+            else:
+                st.session_state['confirm_reset'] = True
+                st.warning("Click again to confirm reset")
 
 # =============================================================================
 # PAGE 1: NEW REQUEST (Original functionality)
@@ -1271,6 +1611,11 @@ else:
                     route = st.session_state['route_data']
                     
                     st.success(f"### 💵 Quote: ${quote['final_price']:,}")
+                    
+                    # Show smart adjustments if any
+                    if quote.get('smart_adjustment', 0) != 0:
+                        reasons = quote.get('adjustment_reasons', [])
+                        st.info(f"📊 **Smart Adjustment:** +${quote['smart_adjustment']} ({', '.join(reasons)})")
                     
                     # Route details
                     st.markdown("**Route Legs:**")
