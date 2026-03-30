@@ -62,8 +62,8 @@ def get_recent_emails_with_excel(mail, limit=10):
         _, message_numbers = mail.search(None, "ALL")
         message_list = message_numbers[0].split()
         
-        # Get last N emails
-        recent_messages = message_list[-limit*2:] if len(message_list) > limit*2 else message_list
+        # Get last 50 emails to search through
+        recent_messages = message_list[-50:] if len(message_list) > 50 else message_list
         recent_messages.reverse()  # Most recent first
         
         for num in recent_messages:
