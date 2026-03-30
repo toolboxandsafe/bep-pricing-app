@@ -386,7 +386,7 @@ def get_recent_emails_with_excel(mail, limit=10):
         return []
 
 def get_excel_from_email(msg):
-    """Extract Excel attachment from email message"""
+    """Extract Excel attachment from email message (returns first one - legacy)"""
     for part in msg.walk():
         if part.get_content_maintype() == "multipart":
             continue
@@ -396,6 +396,86 @@ def get_excel_from_email(msg):
                 "filename": filename,
                 "data": part.get_payload(decode=True)
             }
+    return None
+
+def get_all_excels_from_email(msg):
+    """Extract ALL Excel attachments from email message"""
+    excels = []
+    for part in msg.walk():
+        if part.get_content_maintype() == "multipart":
+            continue
+        filename = part.get_filename()
+        if filename and (filename.endswith('.xlsx') or filename.endswith('.xls')):
+            excels.append({
+                "filename": filename,
+                "data": part.get_payload(decode=True)
+            })
+    return excels
+
+def identify_excel_type(filename, excel_bytes):
+    """
+    Identify if Excel is Move Request (MR) or Work Order (WO)
+    Returns: 'MR', 'WO', or 'UNKNOWN'
+    """
+    filename_upper = filename.upper()
+    
+    # Check filename patterns first
+    if any(x in filename_upper for x in ['WORK ORDER', 'WORKORDER', 'WO-', 'WO_', ' WO ']):
+        return 'WO'
+    if any(x in filename_upper for x in ['MOVE REQUEST', 'MOVEREQUEST', 'MR-', 'MR_', ' MR ', '1VR-', '1SD-']):
+        return 'MR'
+    
+    # Check sheet names
+    try:
+        xl = pd.ExcelFile(BytesIO(excel_bytes))
+        sheet_names_upper = [s.upper() for s in xl.sheet_names]
+        
+        # Work Orders typically have "WORK ORDER" sheet
+        if any('WORK ORDER' in s or 'WORKORDER' in s for s in sheet_names_upper):
+            return 'WO'
+        
+        # Move Requests have "REQUEST" sheet with pickup/delivery
+        if 'REQUEST' in sheet_names_upper:
+            # Double check it has pickup/delivery content
+            df = pd.read_excel(BytesIO(excel_bytes), sheet_name='REQUEST', header=None)
+            content = df.to_string().upper()
+            if 'PICK UP SITE' in content or 'DELIVERY SITE' in content:
+                return 'MR'
+    except:
+        pass
+    
+    # Default: if has REQUEST sheet with addresses, it's MR
+    # Otherwise assume based on content
+    try:
+        df = pd.read_excel(BytesIO(excel_bytes), header=None)
+        content = df.to_string().upper()
+        if 'PICK UP SITE' in content and 'DELIVERY SITE' in content:
+            return 'MR'
+        if 'CREDIT CARD' in content or 'CARD SWAP' in content or 'CARD READER' in content:
+            return 'WO'
+    except:
+        pass
+    
+    return 'UNKNOWN'
+
+def convert_workorder_to_pdf(excel_bytes, filename):
+    """Convert Work Order Excel to PDF using LibreOffice"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        excel_path = os.path.join(tmpdir, filename)
+        with open(excel_path, 'wb') as f:
+            f.write(excel_bytes)
+        
+        result = subprocess.run([
+            'libreoffice', '--headless', '--convert-to', 'pdf',
+            '--outdir', tmpdir, excel_path
+        ], capture_output=True, text=True, timeout=60)
+        
+        pdf_name = os.path.splitext(filename)[0] + ".pdf"
+        pdf_path = os.path.join(tmpdir, pdf_name)
+        
+        if os.path.exists(pdf_path):
+            with open(pdf_path, 'rb') as f:
+                return f.read()
     return None
 BUFFER_THRESHOLD_MILES = 35
 BUFFER_MINUTES = 20
@@ -1208,14 +1288,41 @@ if page == "📧 From Email":
                         st.markdown(f"**Subject:** {em['subject']}")
                         
                         if st.button(f"📥 Process this email", key=f"process_{em['id']}", use_container_width=True):
-                            # Extract Excel
-                            excel_data = get_excel_from_email(em['message'])
+                            # Extract ALL Excel attachments
+                            all_excels = get_all_excels_from_email(em['message'])
                             
-                            if excel_data:
-                                st.session_state['email_excel'] = excel_data['data']
-                                st.session_state['email_excel_name'] = excel_data['filename']
+                            if all_excels:
+                                # Identify each Excel type (MR vs WO)
+                                mr_file = None
+                                wo_files = []
+                                
+                                for excel in all_excels:
+                                    file_type = identify_excel_type(excel['filename'], excel['data'])
+                                    if file_type == 'MR' and mr_file is None:
+                                        mr_file = excel
+                                    elif file_type == 'WO':
+                                        wo_files.append(excel)
+                                    elif mr_file is None:
+                                        # If type unknown and no MR yet, assume first is MR
+                                        mr_file = excel
+                                    else:
+                                        # Additional unknown files treated as WO
+                                        wo_files.append(excel)
+                                
+                                # Store in session
+                                if mr_file:
+                                    st.session_state['email_excel'] = mr_file['data']
+                                    st.session_state['email_excel_name'] = mr_file['filename']
+                                st.session_state['email_wo_files'] = wo_files
                                 st.session_state['email_subject'] = em['subject']
-                                st.success(f"✅ Loaded: {excel_data['filename']}")
+                                st.session_state['has_workorder'] = len(wo_files) > 0
+                                
+                                # Show what was found
+                                if mr_file:
+                                    st.success(f"✅ Move Request: {mr_file['filename']}")
+                                if wo_files:
+                                    for wo in wo_files:
+                                        st.info(f"📋 Work Order: {wo['filename']}")
                 
                 # If email selected, show processing UI
                 if 'email_excel' in st.session_state:
@@ -1223,7 +1330,13 @@ if page == "📧 From Email":
                     st.markdown("### 📋 Process Selected Email")
                     
                     st.info(f"**Subject:** {st.session_state.get('email_subject', '')}")
-                    st.info(f"**File:** {st.session_state.get('email_excel_name', '')}")
+                    st.info(f"**Move Request:** {st.session_state.get('email_excel_name', '')}")
+                    
+                    # Show Work Order info if present
+                    has_workorder = st.session_state.get('has_workorder', False)
+                    wo_files = st.session_state.get('email_wo_files', [])
+                    if has_workorder and wo_files:
+                        st.warning(f"📋 **HAS WORK ORDER:** {', '.join([w['filename'] for w in wo_files])}")
                     
                     # Parse the Excel
                     excel_bytes = st.session_state['email_excel']
@@ -1277,8 +1390,13 @@ if page == "📧 From Email":
                                     reasons = quote.get('adjustment_reasons', [])
                                     st.info(f"📊 **Smart Adjustment:** +${quote['smart_adjustment']} ({', '.join(reasons)})")
                                 
-                                # Build full title
-                                full_title = f"{requester} - {card_title} - ${quote['final_price']}" if requester else f"{card_title} - ${quote['final_price']}"
+                                # Build full title (with HAS WORKORDER flag if applicable)
+                                has_workorder = st.session_state.get('has_workorder', False)
+                                wo_flag = " - HAS WORKORDER" if has_workorder else ""
+                                if requester:
+                                    full_title = f"{requester}{wo_flag} - {card_title} - ${quote['final_price']}"
+                                else:
+                                    full_title = f"{card_title}{wo_flag} - ${quote['final_price']}"
                                 st.text_input("Final Card Title", value=full_title, key="final_title")
                                 
                                 if trello_key and trello_token:
@@ -1304,23 +1422,44 @@ if page == "📧 From Email":
                                                 card_id = card.get('id')
                                                 st.success(f"✅ Card created!")
                                                 
-                                                # Attach Excel
-                                                with st.spinner("Attaching Excel..."):
-                                                    attach_excel_to_card(card_id, excel_bytes, st.session_state.get('email_excel_name', 'request.xlsx'), trello_key, trello_token)
+                                                # ATTACHMENT ORDER: 
+                                                # 1. CAPTURE PDF (easiest for Ryan on mobile)
+                                                # 2. Excel file(s)
+                                                # 3. Work Order PDF (if exists)
                                                 
-                                                # Generate and attach CAPTURE PDF
+                                                # 1. Generate and attach CAPTURE PDF FIRST
                                                 with st.spinner("Generating CAPTURE PDF..."):
                                                     pdf = convert_excel_to_pdf(excel_bytes, st.session_state.get('email_excel_name', 'request.xlsx'))
                                                     if pdf:
                                                         pdf = remove_pdf_pages(pdf, [1])
                                                         pdf_name = f"CAPTURE_{mr_number or 'BEP'}_{datetime.now().strftime('%Y%m%d')}.pdf"
                                                         attach_pdf_to_card(card_id, pdf, pdf_name, trello_key, trello_token)
+                                                        st.success("✅ CAPTURE PDF attached")
+                                                
+                                                # 2. Attach Move Request Excel
+                                                with st.spinner("Attaching Excel..."):
+                                                    attach_excel_to_card(card_id, excel_bytes, st.session_state.get('email_excel_name', 'request.xlsx'), trello_key, trello_token)
+                                                
+                                                # 3. Attach Work Order files (if any)
+                                                wo_files = st.session_state.get('email_wo_files', [])
+                                                if wo_files:
+                                                    for wo in wo_files:
+                                                        with st.spinner(f"Processing Work Order: {wo['filename']}..."):
+                                                            # Attach WO Excel
+                                                            attach_excel_to_card(card_id, wo['data'], wo['filename'], trello_key, trello_token)
+                                                            
+                                                            # Convert WO to PDF and attach
+                                                            wo_pdf = convert_workorder_to_pdf(wo['data'], wo['filename'])
+                                                            if wo_pdf:
+                                                                wo_pdf_name = f"WORKORDER_{os.path.splitext(wo['filename'])[0]}.pdf"
+                                                                attach_pdf_to_card(card_id, wo_pdf, wo_pdf_name, trello_key, trello_token)
+                                                                st.success(f"✅ Work Order PDF attached: {wo_pdf_name}")
                                                 
                                                 st.success("✅ All files attached!")
                                                 st.markdown(f"[Open Card]({card.get('shortUrl')})")
                                                 
                                                 # Clear session
-                                                for key in ['email_excel', 'email_excel_name', 'email_subject', 'email_quote', 'email_route', 'email_data']:
+                                                for key in ['email_excel', 'email_excel_name', 'email_subject', 'email_quote', 'email_route', 'email_data', 'email_wo_files', 'has_workorder']:
                                                     if key in st.session_state:
                                                         del st.session_state[key]
                                             else:
