@@ -181,6 +181,40 @@ def extract_price_adjustment_from_title(title):
     
     return None, None
 
+def extract_price_adjustment_from_comments(comments):
+    """
+    Extract price adjustment from comments like:
+    - 'change to $400'
+    - 'changed to $350'
+    - 'Ryan: $400'
+    - 'should be $500'
+    - 'adjust to $300'
+    Returns final_price or None
+    """
+    if not comments:
+        return None
+    
+    # Join all comments into one string
+    all_comments = " ".join(comments) if isinstance(comments, list) else comments
+    
+    # Patterns to look for final price in comments
+    patterns = [
+        r'change(?:d)?\s*to\s*\$?(\d+)',           # change to $400, changed to 400
+        r'adjust(?:ed)?\s*to\s*\$?(\d+)',          # adjust to $400
+        r'should\s*be\s*\$?(\d+)',                  # should be $400
+        r'Ryan[:\s]+\$?(\d+)',                      # Ryan: $400, Ryan $400
+        r'final[:\s]+\$?(\d+)',                     # final: $400
+        r'approved[:\s]+\$?(\d+)',                  # approved: $400
+        r'price[:\s]+\$?(\d+)',                     # price: $400
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, all_comments, re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+    
+    return None
+
 def extract_original_quote_from_desc(description):
     """Extract original calculated quote from card description"""
     if not description:
@@ -1306,6 +1340,11 @@ elif page == "📝 Generate Quote":
             # THIRD: Extract final price from title (just the last $XXX)
             auto_quote = extract_quote_from_title(card_title)
             
+            # FOURTH: Check comments for price adjustments
+            comments = get_card_comments(card_id, trello_key, trello_token)
+            comment_price = extract_price_adjustment_from_comments(comments)
+            comment_text = " | ".join(comments) if comments else ""
+            
             # Determine which original/final to use
             if title_original and title_final:
                 # Title has explicit adjustment pattern - use that
@@ -1313,6 +1352,12 @@ elif page == "📝 Generate Quote":
                 final_quote = title_final
                 auto_quote = title_final  # For the input field
                 st.info(f"📊 **Title shows adjustment:** ${title_original} → ${title_final}")
+            elif comment_price and auto_quote:
+                # Comment has price adjustment
+                original_quote = auto_quote
+                final_quote = comment_price
+                auto_quote = comment_price  # For the input field
+                st.info(f"📊 **Comment shows adjustment:** ${original_quote} → ${comment_price}")
             elif desc_original:
                 # Use description marker vs title price
                 original_quote = desc_original
@@ -1321,6 +1366,12 @@ elif page == "📝 Generate Quote":
                 # No adjustment info available
                 original_quote = None
                 final_quote = auto_quote
+            
+            # Show comments if any
+            if comments:
+                with st.expander(f"💬 Card Comments ({len(comments)})"):
+                    for c in comments[:5]:  # Show first 5 comments
+                        st.caption(c[:200] + "..." if len(c) > 200 else c)
             
             locations = extract_locations_from_desc(card_info.get('desc', ''))
             
@@ -1408,8 +1459,7 @@ elif page == "📝 Generate Quote":
                                     
                                     # Log feedback for learning system
                                     if original_quote:
-                                        comments = get_card_comments(card_id, trello_key, trello_token)
-                                        comment_text = " | ".join(comments) if comments else ""
+                                        # comments and comment_text already fetched above
                                         diff = log_quote_feedback(
                                             original_quote=original_quote,
                                             final_price=quote_amount,
