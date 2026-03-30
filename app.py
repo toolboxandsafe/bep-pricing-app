@@ -161,6 +161,26 @@ def get_smart_adjustment(pickup_locations, delivery_locations):
     
     return adjustment, min_price, reasons
 
+def extract_price_adjustment_from_title(title):
+    """
+    Extract price adjustment from title patterns like:
+    - '$350 change to $400'
+    - '$450 Ryan said $400'
+    - '$300 -change to $350'
+    Returns (original_price, final_price) or (None, None)
+    """
+    if not title:
+        return None, None
+    
+    # Pattern: $XXX change to $YYY or $XXX Ryan said $YYY
+    match = re.search(r'\$(\d+)\s*(?:change to|-change to|Ryan said)\s*\$?(\d+)', title, re.IGNORECASE)
+    if match:
+        original = int(match.group(1))
+        final = int(match.group(2))
+        return original, final
+    
+    return None, None
+
 def extract_original_quote_from_desc(description):
     """Extract original calculated quote from card description"""
     if not description:
@@ -1275,23 +1295,47 @@ elif page == "📝 Generate Quote":
         if card_info:
             st.success(f"✅ Found card: **{card_info.get('name')}**")
             
-            # Extract quote from title (Ryan's final price)
-            auto_quote = extract_quote_from_title(card_info.get('name', ''))
+            card_title = card_info.get('name', '')
             
-            # Extract original calculated quote from description
-            original_quote = extract_original_quote_from_desc(card_info.get('desc', ''))
+            # FIRST: Check if title has adjustment pattern like "$350 change to $400"
+            title_original, title_final = extract_price_adjustment_from_title(card_title)
+            
+            # SECOND: Try to extract from description marker or quote section
+            desc_original = extract_original_quote_from_desc(card_info.get('desc', ''))
+            
+            # THIRD: Extract final price from title (just the last $XXX)
+            auto_quote = extract_quote_from_title(card_title)
+            
+            # Determine which original/final to use
+            if title_original and title_final:
+                # Title has explicit adjustment pattern - use that
+                original_quote = title_original
+                final_quote = title_final
+                auto_quote = title_final  # For the input field
+                st.info(f"📊 **Title shows adjustment:** ${title_original} → ${title_final}")
+            elif desc_original:
+                # Use description marker vs title price
+                original_quote = desc_original
+                final_quote = auto_quote
+            else:
+                # No adjustment info available
+                original_quote = None
+                final_quote = auto_quote
+            
             locations = extract_locations_from_desc(card_info.get('desc', ''))
             
             # Show learning feedback if there's a difference
-            if original_quote and auto_quote and original_quote != auto_quote:
-                diff = auto_quote - original_quote
+            if original_quote and final_quote and original_quote != final_quote:
+                diff = final_quote - original_quote
                 diff_pct = round((diff / original_quote) * 100, 1)
                 if diff > 0:
-                    st.warning(f"📊 **Price Adjustment Detected:** Original ${original_quote} → Final ${auto_quote} (**+${diff}**, +{diff_pct}%)")
+                    st.warning(f"📊 **Price Adjustment Detected:** Original ${original_quote} → Final ${final_quote} (**+${diff}**, +{diff_pct}%)")
                 else:
-                    st.info(f"📊 **Price Adjustment Detected:** Original ${original_quote} → Final ${auto_quote} (**${diff}**, {diff_pct}%)")
-            elif original_quote and auto_quote and original_quote == auto_quote:
-                st.success(f"✅ **Price Match:** Calculated ${original_quote} = Final ${auto_quote}")
+                    st.info(f"📊 **Price Adjustment Detected:** Original ${original_quote} → Final ${final_quote} (**${diff}**, {diff_pct}%)")
+            elif original_quote and final_quote and original_quote == final_quote:
+                st.success(f"✅ **Price Match:** Calculated ${original_quote} = Final ${final_quote}")
+            elif not original_quote:
+                st.info("ℹ️ No original quote found - this card was created before the learning system")
             
             col1, col2 = st.columns(2)
             with col1:
