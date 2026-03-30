@@ -624,5 +624,55 @@
   "adjustments_up": 29,
   "adjustments_down": 20,
   "avg_adjustment": -29.59,
-  "notes": "Imported from historical Trello cards with price corrections"
+  "notes": "Imported from historical Trello cards with price corrections",
+  "ai_insights": {
+    "outdoor_machine": {
+      "count": 0,
+      "total_diff": 0,
+      "avg_diff": 0,
+      "description": "Machine located outside"
+    },
+    "vandalized": {
+      "count": 0,
+      "total_diff": 0,
+      "avg_diff": 0,
+      "description": "Vandalized or damaged equipment"
+    },
+    "far_location": {
+      "count": 0,
+      "total_diff": 0,
+      "avg_diff": 0,
+      "description": "Far distance from typical routes"
+    },
+    "stairs_no_elevator": {
+      "count": 0,
+      "total_diff": 0,
+      "avg_diff": 0,
+      "description": "Stairs required, no elevator"
+    },
+    "combining_trips": {
+      "count": 0,
+      "total_diff": 0,
+      "avg_diff": 0,
+      "description": "Combined with other jobs (discount)"
+    },
+    "heavy_machine": {
+      "count": 0,
+      "total_diff": 0,
+      "avg_diff": 0,
+      "description": "Heavier than typical machine"
+    },
+    "difficult_access": {
+      "count": 0,
+      "total_diff": 0,
+      "avg_diff": 0,
+      "description": "Difficult site access"
+    },
+    "time_sensitive": {
+      "count": 0,
+      "total_diff": 0,
+      "avg_diff": 0,
+      "description": "Urgent/time-sensitive job"
+    }
+  }
 }
