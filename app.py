@@ -270,6 +270,38 @@ def get_card_comments(card_id, api_key, api_token):
         pass
     return []
 
+def post_analysis_request(card_id, original_quote, final_price, ryan_comment, api_key, api_token):
+    """Post a comment requesting AI analysis from Grant"""
+    diff = final_price - original_quote
+    diff_pct = round((diff / original_quote) * 100, 1) if original_quote > 0 else 0
+    
+    comment = f"""🤖 **@grantworks2026 - AI Analysis Requested**
+
+📊 **Price Adjustment Detected:**
+- Original Quote: ${original_quote}
+- Final Price: ${final_price}
+- Adjustment: ${diff:+d} ({diff_pct:+.1f}%)
+
+💬 **Ryan's Feedback:**
+{ryan_comment if ryan_comment else "(No comment provided)"}
+
+---
+*Please analyze the factors contributing to this adjustment and update the learning database.*
+"""
+    
+    url = f"https://api.trello.com/1/cards/{card_id}/actions/comments"
+    params = {
+        'key': api_key,
+        'token': api_token,
+        'text': comment
+    }
+    
+    try:
+        response = requests.post(url, params=params)
+        return response.status_code == 200
+    except Exception as e:
+        return False
+
 # Gmail IMAP settings
 GMAIL_USER = os.environ.get("GMAIL_USER", "grantworks2026@gmail.com")
 GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
@@ -1469,6 +1501,19 @@ elif page == "📝 Generate Quote":
                                         )
                                         if diff != 0:
                                             st.info(f"📊 Logged price adjustment: ${diff:+d} (learning system updated)")
+                                            
+                                            # Request AI analysis from Grant
+                                            if post_analysis_request(
+                                                card_id=card_id,
+                                                original_quote=original_quote,
+                                                final_price=quote_amount,
+                                                ryan_comment=comment_text,
+                                                api_key=trello_key,
+                                                api_token=trello_token
+                                            ):
+                                                st.success("🤖 AI analysis requested - Grant will review within 6 hours")
+                                            else:
+                                                st.warning("⚠️ Could not request AI analysis")
                                         else:
                                             st.info("📊 Logged: Quote matched (no adjustment)")
                                     
