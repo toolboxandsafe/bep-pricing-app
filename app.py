@@ -28,6 +28,51 @@ st.set_page_config(
     layout="wide"
 )
 
+# =============================================================================
+# AUTHENTICATION
+# =============================================================================
+def check_password():
+    """Returns True if the user has entered a correct password."""
+    
+    # Get credentials from environment variables
+    correct_username = os.environ.get("APP_USERNAME", "admin")
+    correct_password = os.environ.get("APP_PASSWORD", "bep2026")
+    
+    def login_form():
+        """Show login form"""
+        st.markdown("## 🔐 Login Required")
+        st.markdown("This app is password protected.")
+        
+        with st.form("login_form"):
+            username = st.text_input("Username")
+            password = st.text_input("Password", type="password")
+            submitted = st.form_submit_button("Login", use_container_width=True)
+            
+            if submitted:
+                if username == correct_username and password == correct_password:
+                    st.session_state["authenticated"] = True
+                    st.session_state["username"] = username
+                    st.rerun()
+                else:
+                    st.error("❌ Invalid username or password")
+        return False
+    
+    # Check if already authenticated
+    if st.session_state.get("authenticated", False):
+        return True
+    
+    # Show login form
+    login_form()
+    return False
+
+# Require authentication before showing app
+if not check_password():
+    st.stop()
+
+# =============================================================================
+# MAIN APP (only runs if authenticated)
+# =============================================================================
+
 # Constants
 HQ_ADDRESS = "Gilbert, AZ 85295"
 HOURLY_RATE = 170
@@ -322,7 +367,7 @@ def connect_to_gmail():
         st.error(f"Gmail connection failed: {e}")
         return None
 
-def get_recent_emails_with_excel(mail, limit=10):
+def get_recent_emails_with_excel(mail, limit=20):
     """Get recent emails that have Excel attachments"""
     emails = []
     try:
@@ -332,8 +377,8 @@ def get_recent_emails_with_excel(mail, limit=10):
         _, message_numbers = mail.search(None, "ALL")
         message_list = message_numbers[0].split()
         
-        # Get last 100 emails to search through
-        recent_messages = message_list[-100:] if len(message_list) > 100 else message_list
+        # Get last 20 emails only (faster, less API calls)
+        recent_messages = message_list[-20:] if len(message_list) > 20 else message_list
         recent_messages.reverse()  # Most recent first
         
         for num in recent_messages:
@@ -1222,6 +1267,16 @@ trello_list = os.environ.get("TRELLO_LIST_ID", "699c9f9d6117bdcbb2d0e0aa")
 # Sidebar - Page Navigation
 with st.sidebar:
     st.title("🚚 BEP Tools")
+    
+    # Show logged in user and logout button
+    st.caption(f"👤 Logged in as: **{st.session_state.get('username', 'unknown')}**")
+    if st.button("🚪 Logout", use_container_width=True):
+        st.session_state["authenticated"] = False
+        st.session_state["username"] = None
+        st.rerun()
+    
+    st.divider()
+    
     page = st.radio("Select Page:", ["📤 New Request", "📧 From Email", "📝 Generate Quote", "📊 Learning Data"], label_visibility="collapsed")
     
     st.divider()
