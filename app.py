@@ -531,6 +531,69 @@ GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY", "")
 # EXCEL PARSING - BEP REQUEST TAB (IMPROVED)
 # =============================================================================
 
+def store_address_keywords(full_address, known_addresses):
+    """Extract keywords from a full address and store for later lookup"""
+    if not full_address or len(full_address) < 15:
+        return
+    
+    addr_upper = full_address.upper()
+    
+    # Extract potential short names (facility names, building names)
+    # Common patterns: "Bevell", "Maximus", "DES", "ADES", pool names, etc.
+    keywords_to_extract = [
+        'BEVELL', 'MAXIMUS', 'ADES', 'DES', 'DCS', 'MVD', 'DMV',
+        'POOL', 'POLICE', 'COURT', 'CENTER', 'CIVIC', 'CAMPUS',
+        'EASTLAKE', 'WESTLAKE', 'MADISON', 'CACTUS', 'KIWANIS',
+        'PEORIA', 'GLENDALE', 'TEMPE', 'MESA', 'GILBERT', 'CHANDLER',
+        'SCOTTSDALE', 'PHOENIX', 'TUCSON', 'YUMA', 'FLAGSTAFF'
+    ]
+    
+    for keyword in keywords_to_extract:
+        if keyword in addr_upper:
+            # Store mapping: keyword -> full address
+            if keyword not in known_addresses:
+                known_addresses[keyword] = full_address
+    
+    # Also store any capitalized words that might be facility names
+    words = re.findall(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b', full_address)
+    for word in words:
+        if len(word) > 4 and word.upper() not in ['STREET', 'AVENUE', 'DRIVE', 'ROAD', 'SUITE', 'FLOOR']:
+            known_addresses[word.upper()] = full_address
+
+def resolve_short_address(addr_text, known_addresses):
+    """
+    If addr_text is a short name (like 'Bevell'), try to resolve it 
+    to a full address we've seen before.
+    """
+    if not addr_text:
+        return addr_text
+    
+    addr_text = addr_text.strip()
+    
+    # If it looks like a full address (has numbers + street type), return as-is
+    if re.search(r'\d+.*(?:ST|AVE|BLVD|RD|DR|LN|WAY|PKWY|HWY|STREET|AVENUE|DRIVE|ROAD)', addr_text.upper()):
+        return addr_text
+    
+    # Short text - try to match against known addresses
+    addr_upper = addr_text.upper()
+    
+    # Direct match
+    if addr_upper in known_addresses:
+        return known_addresses[addr_upper]
+    
+    # Partial match - check if short name is contained in any known key
+    for keyword, full_addr in known_addresses.items():
+        if addr_upper in keyword or keyword in addr_upper:
+            return full_addr
+    
+    # Check if short name appears in any known full address
+    for keyword, full_addr in known_addresses.items():
+        if addr_upper in full_addr.upper():
+            return full_addr
+    
+    # No match found, return original
+    return addr_text
+
 def normalize_address(address):
     """Normalize address for deduplication"""
     if not address:
@@ -664,6 +727,9 @@ def parse_bep_excel_v2(uploaded_file):
         current_machine = None
         current_section = None
         
+        # Track all full addresses we've seen (for resolving short names)
+        known_addresses = {}
+        
         for row_idx in range(start_row, end_row):
             row = rows[row_idx]
             row_text = " ".join(row).upper()
@@ -705,20 +771,28 @@ def parse_bep_excel_v2(uploaded_file):
                     if "PICK UP SITE" in cell_upper or "PICKUP SITE" in cell_upper:
                         # Address should be in next cell(s) on same row
                         for addr_cell in row[col_idx+1:]:
-                            if addr_cell and len(addr_cell) > 5 and 'NAN' not in addr_cell.upper():
+                            if addr_cell and len(addr_cell) > 3 and 'NAN' not in addr_cell.upper():
                                 if not current_machine["pickup"]:
-                                    current_machine["pickup"] = addr_cell
-                                    current_machine["pickup_address"] = normalize_address(addr_cell)
+                                    resolved_addr = resolve_short_address(addr_cell, known_addresses)
+                                    current_machine["pickup"] = resolved_addr
+                                    current_machine["pickup_address"] = normalize_address(resolved_addr)
+                                    # Store full addresses for future reference
+                                    if len(addr_cell) > 20:  # Likely a full address
+                                        store_address_keywords(addr_cell, known_addresses)
                                 break
                     
                     # DELIVERY ADDRESS: Look for "Delivery site" label, grab address from same row
                     elif "DELIVERY SITE" in cell_upper or "DELIVER SITE" in cell_upper or "DELIVER TO" in cell_upper:
                         # Address should be in next cell(s) on same row
                         for addr_cell in row[col_idx+1:]:
-                            if addr_cell and len(addr_cell) > 5 and 'NAN' not in addr_cell.upper():
+                            if addr_cell and len(addr_cell) > 3 and 'NAN' not in addr_cell.upper():
                                 if not current_machine["delivery"]:
-                                    current_machine["delivery"] = addr_cell
-                                    current_machine["delivery_address"] = normalize_address(addr_cell)
+                                    resolved_addr = resolve_short_address(addr_cell, known_addresses)
+                                    current_machine["delivery"] = resolved_addr
+                                    current_machine["delivery_address"] = normalize_address(resolved_addr)
+                                    # Store full addresses for future reference
+                                    if len(addr_cell) > 20:  # Likely a full address
+                                        store_address_keywords(addr_cell, known_addresses)
                                 break
                     
                     # MACHINE TYPE: Look for "Items to be moved" label, grab type from same row
