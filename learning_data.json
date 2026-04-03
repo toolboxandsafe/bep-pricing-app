@@ -1,7 +1,7 @@
 {
   "version": "1.0",
   "created": "2026-03-29T20:45:00",
-  "updated": "2026-03-29T21:08:02.479783",
+  "updated": "2026-04-03T11:19:29.727047",
   "quotes": [
     {
       "timestamp": "2026-03-29T00:00:00",
@@ -585,6 +585,23 @@
       ],
       "comments": "777035891A1",
       "source": "historical_trello"
+    },
+    {
+      "timestamp": "2026-04-02T00:00:00",
+      "card_name": "Rob - Fwd: MO for GMI / Epic Tucson Police Baloo",
+      "original_quote": 850,
+      "final_price": 930,
+      "adjustment": 80,
+      "adjustment_pct": 9.4,
+      "locations": [
+        "tucson"
+      ],
+      "comments": "Ryan said Change to $930 gas is expensive at the moment",
+      "factors": [
+        "gas_prices",
+        "tucson_distance"
+      ],
+      "source": "trello_feedback"
     }
   ],
   "location_stats": {
