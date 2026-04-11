@@ -19,7 +19,9 @@ import pandas as pd
 from io import BytesIO
 from fpdf import FPDF
 import requests
+import hashlib
 from PyPDF2 import PdfReader, PdfWriter
+from supabase import create_client
 
 # Page config
 st.set_page_config(
@@ -79,6 +81,15 @@ HOURLY_RATE = 170
 
 # Learning Data File
 LEARNING_DATA_FILE = "learning_data.json"
+
+# Supabase client (for route cache)
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
+try:
+    supabase = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
+except Exception as _e:
+    supabase = None
+    st.warning(f"Supabase client init failed: {_e}")
 
 # Location adjustments from BEP Pricing Rulebook (413 jobs analyzed)
 LOCATION_ADJUSTMENTS = {
@@ -897,6 +908,43 @@ def get_distance_matrix(origins, destinations):
         st.error(f"API request failed: {e}")
         return None
 
+# =============================================================================
+# ROUTE CACHE (Supabase)
+# =============================================================================
+
+def _cache_key(origin, destination):
+    """Stable MD5 cache key from origin|destination."""
+    raw = f"{origin.strip().lower()}|{destination.strip().lower()}"
+    return hashlib.md5(raw.encode()).hexdigest()
+
+def _get_cached_route(origin, destination):
+    """Look up a cached route leg from Supabase. Returns dict or None."""
+    if not supabase:
+        return None
+    try:
+        key = _cache_key(origin, destination)
+        result = supabase.table("route_cache").select("distance_miles,duration_minutes").eq("cache_key", key).limit(1).execute()
+        if result.data:
+            return result.data[0]
+    except Exception as e:
+        st.warning(f"route_cache read failed: {type(e).__name__}: {e}")
+    return None
+
+def _save_cached_route(origin, destination, distance_miles, duration_minutes):
+    """Store a route leg in Supabase cache."""
+    if not supabase:
+        return
+    try:
+        supabase.table("route_cache").upsert({
+            "cache_key": _cache_key(origin, destination),
+            "origin": origin,
+            "destination": destination,
+            "distance_miles": float(distance_miles),
+            "duration_minutes": float(duration_minutes),
+        }).execute()
+    except Exception as e:
+        st.warning(f"route_cache write failed: {type(e).__name__}: {e}")
+
 def calculate_route(pickups, deliveries):
     """
     Calculate sequential route: HQ → Pickups → Deliveries → HQ
@@ -907,36 +955,56 @@ def calculate_route(pickups, deliveries):
     route.extend(pickups)
     route.extend(deliveries)
     route.append(HQ_ADDRESS)
-    
+
     legs = []
     total_duration_minutes = 0
     max_distance_miles = 0
-    
+
     # Calculate each consecutive leg
     for i in range(len(route) - 1):
         origin = route[i]
         destination = route[i + 1]
-        
-        data = get_distance_matrix([origin], [destination])
-        
-        if data and data["rows"][0]["elements"][0]["status"] == "OK":
-            element = data["rows"][0]["elements"][0]
-            
-            # Distance in miles
-            distance_meters = element["distance"]["value"]
-            distance_miles = distance_meters / 1609.34
-            
-            # Duration in minutes
-            duration_seconds = element["duration"]["value"]
-            duration_minutes = duration_seconds / 60
-            
+
+        # Check Supabase cache first
+        cached = _get_cached_route(origin, destination)
+        if cached:
+            distance_miles = float(cached["distance_miles"])
+            duration_minutes = float(cached["duration_minutes"])
             legs.append({
                 "from": origin,
                 "to": destination,
                 "distance_miles": round(distance_miles, 1),
-                "duration_minutes": round(duration_minutes, 1)
+                "duration_minutes": round(duration_minutes, 1),
+                "cached": True,
             })
-            
+            total_duration_minutes += duration_minutes
+            max_distance_miles = max(max_distance_miles, distance_miles)
+            continue
+
+        data = get_distance_matrix([origin], [destination])
+
+        if data and data["rows"][0]["elements"][0]["status"] == "OK":
+            element = data["rows"][0]["elements"][0]
+
+            # Distance in miles
+            distance_meters = element["distance"]["value"]
+            distance_miles = distance_meters / 1609.34
+
+            # Duration in minutes
+            duration_seconds = element["duration"]["value"]
+            duration_minutes = duration_seconds / 60
+
+            # Save to cache for future requests
+            _save_cached_route(origin, destination, round(distance_miles, 1), round(duration_minutes, 1))
+
+            legs.append({
+                "from": origin,
+                "to": destination,
+                "distance_miles": round(distance_miles, 1),
+                "duration_minutes": round(duration_minutes, 1),
+                "cached": False,
+            })
+
             total_duration_minutes += duration_minutes
             max_distance_miles = max(max_distance_miles, distance_miles)
         else:
@@ -1351,7 +1419,7 @@ with st.sidebar:
     
     st.divider()
     
-    page = st.radio("Select Page:", ["📤 New Request", "📧 From Email", "📝 Generate Quote", "📊 Learning Data"], label_visibility="collapsed")
+    page = st.radio("Select Page:", ["📤 New Request", "📧 From Email", "📝 Generate Quote", "📊 Learning Data", "🗺️ Route Cache"], label_visibility="collapsed")
     
     st.divider()
     
@@ -2129,6 +2197,55 @@ else:
     
     else:
         st.info("👆 Upload a BEP Move Request Excel file to get started")
+
+elif page == "🗺️ Route Cache":
+    st.title("🗺️ Route Cache")
+    st.caption("Cached Google Maps route legs (stored in Supabase).")
+
+    if not supabase:
+        st.error("Supabase is not configured. Set SUPABASE_URL and SUPABASE_KEY in the environment.")
+    else:
+        col1, col2, col3 = st.columns([1, 1, 2])
+        with col1:
+            if st.button("🔄 Refresh"):
+                st.rerun()
+        with col3:
+            search = st.text_input("Filter by origin/destination (optional)", "", label_visibility="collapsed", placeholder="Filter by origin or destination…")
+
+        try:
+            result = supabase.table("route_cache").select("*").order("created_at", desc=True).limit(1000).execute()
+            rows = result.data or []
+
+            if search:
+                s = search.lower()
+                rows = [r for r in rows if s in (r.get("origin") or "").lower() or s in (r.get("destination") or "").lower()]
+
+            st.metric("Cached routes", len(rows))
+
+            if rows:
+                df = pd.DataFrame(rows)
+                # Order columns nicely
+                preferred = ["origin", "destination", "distance_miles", "duration_minutes", "created_at", "cache_key"]
+                cols = [c for c in preferred if c in df.columns] + [c for c in df.columns if c not in preferred]
+                st.dataframe(df[cols], use_container_width=True, hide_index=True)
+
+                with col2:
+                    if st.button("🗑️ Clear cache", type="secondary"):
+                        if st.session_state.get("_confirm_clear_cache"):
+                            try:
+                                supabase.table("route_cache").delete().neq("cache_key", "").execute()
+                                st.session_state["_confirm_clear_cache"] = False
+                                st.success("Cache cleared.")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Clear failed: {e}")
+                        else:
+                            st.session_state["_confirm_clear_cache"] = True
+                            st.warning("Click 'Clear cache' again to confirm.")
+            else:
+                st.info("No cached routes yet. Generate a quote to populate the cache.")
+        except Exception as e:
+            st.error(f"Could not load route cache: {type(e).__name__}: {e}")
 
 # Footer
 st.divider()
