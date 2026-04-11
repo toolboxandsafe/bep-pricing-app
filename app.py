@@ -1982,7 +1982,7 @@ elif page == "📊 Learning Data":
 # =============================================================================
 # PAGE 1: NEW REQUEST (Original functionality)
 # =============================================================================
-else:
+elif page == "📤 New Request":
     st.title("📤 New Request")
     st.markdown("**Upload Excel → Calculate quote → Create Trello card**")
     
