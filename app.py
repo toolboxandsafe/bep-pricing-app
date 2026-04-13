@@ -1436,15 +1436,32 @@ def remove_pdf_pages(pdf_bytes, pages_to_remove=[1]):
 def create_trello_card(data, api_key, api_token, list_id):
     """Create Trello card with quote data"""
     
-    # Build driving stops
-    stops = ["HQ"]
-    for p in data.get("unique_pickups", []):
-        short_name = p.split()[0][:6].upper() if p else "?"
-        stops.append(short_name)
-    for d in data.get("unique_deliveries", []):
-        short_name = d.split()[0][:6].upper() if d else "?"
-        stops.append(short_name)
-    stops.append("HQ")
+    # Build driving stops — prefer the optimized route sequence if present,
+    # otherwise fall back to the old pickups-then-deliveries ordering.
+    route_seq = data.get("route") or []
+    if route_seq:
+        def _short(addr):
+            if not addr:
+                return "?"
+            if "gilbert" in addr.lower() and "85295" in addr:
+                return "HQ"
+            # First token that contains a digit (street number), else first word
+            for tok in addr.split():
+                if any(c.isdigit() for c in tok):
+                    return tok[:6].upper()
+            return addr.split()[0][:6].upper()
+        stops = [_short(a) for a in route_seq]
+        unique_stop_count = len({_dedupe_key(a) for a in route_seq if a and "gilbert" not in a.lower()})
+    else:
+        stops = ["HQ"]
+        for p in data.get("unique_pickups", []):
+            stops.append(p.split()[0][:6].upper() if p else "?")
+        for d in data.get("unique_deliveries", []):
+            stops.append(d.split()[0][:6].upper() if d else "?")
+        stops.append("HQ")
+        all_keys = {_dedupe_key(a) for a in data.get("unique_pickups", []) + data.get("unique_deliveries", []) if a}
+        all_keys.discard("")
+        unique_stop_count = len(all_keys)
     driving_stops = " - ".join(stops)
     
     # Use custom title if provided, otherwise build from data
@@ -1476,7 +1493,7 @@ def create_trello_card(data, api_key, api_token, list_id):
 ### 🚗 DRIVING STOPS
 {driving_stops}
 
-({len(data.get('unique_pickups', [])) + len(data.get('unique_deliveries', []))} unique stops)
+({unique_stop_count} unique stops)
 
 ---
 
@@ -1890,6 +1907,7 @@ if page == "📧 From Email":
                                                 "unique_deliveries": unique_deliveries,
                                                 "num_machines": len(data.get('machines', [])),
                                                 "other_notes": data.get('other_notes'),
+                                                "route": route_data.get("route", []),
                                                 **quote
                                             }
                                             
@@ -2374,6 +2392,7 @@ elif page == "📤 New Request":
                                 "unique_deliveries": unique_deliveries,
                                 "num_machines": len(edited_machines),
                                 "other_notes": other_notes,
+                                "route": route_data.get("route", []),
                                 **quote
                             }
                     else:
