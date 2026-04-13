@@ -2342,11 +2342,17 @@ elif page == "📤 New Request":
                 # Get unique addresses for routing
                 unique_pickups = clean_and_dedupe_addresses([m["pickup"] for m in edited_machines if m.get("pickup")])
                 unique_deliveries = clean_and_dedupe_addresses([m["delivery"] for m in edited_machines if m.get("delivery")])
-                
+
+                # True unique-stop count: a location that is both a pickup and a
+                # delivery counts ONCE because the optimal router visits it once.
+                all_stop_keys = {_dedupe_key(a) for a in unique_pickups + unique_deliveries if a}
+                all_stop_keys.discard("")
+                unique_stops = len(all_stop_keys)
+
                 st.info(f"""
-                **Route:** Gilbert, AZ 85295 → {len(unique_pickups)} pickup(s) → {len(unique_deliveries)} delivery(s) → HQ
-                
-                **Machines:** {len(edited_machines)}
+                **Route:** Gilbert, AZ 85295 → {unique_stops} unique stop(s) → HQ
+
+                **Machines:** {len(edited_machines)}  ({len(unique_pickups)} distinct pickup addr, {len(unique_deliveries)} distinct delivery addr)
                 """)
                 
                 if st.button("🧮 CALCULATE ROUTE & QUOTE", type="primary", use_container_width=True):
