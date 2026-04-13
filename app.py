@@ -1017,27 +1017,25 @@ def clean_address_for_geocoding(raw):
 
     return re.sub(r'\s+', ' ', tail).strip(' ,')
 
+def clean_and_dedupe_addresses(items):
+    """Clean each address for geocoding, then dedupe while preserving order."""
+    cleaned = [clean_address_for_geocoding(i) for i in items if i]
+    seen = {}
+    for it in cleaned:
+        key = re.sub(r'\s+', ' ', (it or '').strip().lower()).rstrip(' ,.')
+        if key and key not in seen:
+            seen[key] = it
+    return list(seen.values())
+
 def calculate_route(pickups, deliveries):
     """
     Calculate sequential route: HQ → Pickups → Deliveries → HQ
     Returns list of legs with distance and duration
     """
-    # Clean messy BEP address strings before sending to Google Maps
-    pickups = [clean_address_for_geocoding(p) for p in pickups]
-    deliveries = [clean_address_for_geocoding(d) for d in deliveries]
-
-    # Dedupe AFTER cleaning so "PV pool" and "PV Pool 17648 N 40th St"
-    # collapse to one stop. Preserve order (dict keeps insertion order).
-    def _dedupe(items):
-        seen = {}
-        for it in items:
-            key = re.sub(r'\s+', ' ', (it or '').strip().lower()).rstrip(' ,.')
-            if key and key not in seen:
-                seen[key] = it
-        return list(seen.values())
-
-    pickups = _dedupe(pickups)
-    deliveries = _dedupe(deliveries)
+    # Clean + dedupe BEFORE routing so "PV pool" and "PV Pool 17648 N 40th St"
+    # collapse to one stop.
+    pickups = clean_and_dedupe_addresses(pickups)
+    deliveries = clean_and_dedupe_addresses(deliveries)
 
     # Build route
     route = [HQ_ADDRESS]
@@ -1651,8 +1649,8 @@ if page == "📧 From Email":
                         
                         with col2:
                             # Get unique addresses
-                            unique_pickups = list(set([m["pickup"] for m in data.get('machines', []) if m.get("pickup")]))
-                            unique_deliveries = list(set([m["delivery"] for m in data.get('machines', []) if m.get("delivery")]))
+                            unique_pickups = clean_and_dedupe_addresses([m["pickup"] for m in data.get('machines', []) if m.get("pickup")])
+                            unique_deliveries = clean_and_dedupe_addresses([m["delivery"] for m in data.get('machines', []) if m.get("delivery")])
                             
                             if not unique_pickups and not unique_deliveries:
                                 st.error("❌ No pickup or delivery addresses found. Cannot calculate quote.")
@@ -2146,8 +2144,8 @@ elif page == "📤 New Request":
                 st.subheader("🗺️ Route & Quote")
                 
                 # Get unique addresses for routing
-                unique_pickups = list(set([m["pickup"] for m in edited_machines if m.get("pickup")]))
-                unique_deliveries = list(set([m["delivery"] for m in edited_machines if m.get("delivery")]))
+                unique_pickups = clean_and_dedupe_addresses([m["pickup"] for m in edited_machines if m.get("pickup")])
+                unique_deliveries = clean_and_dedupe_addresses([m["delivery"] for m in edited_machines if m.get("delivery")])
                 
                 st.info(f"""
                 **Route:** Gilbert, AZ 85295 → {len(unique_pickups)} pickup(s) → {len(unique_deliveries)} delivery(s) → HQ
