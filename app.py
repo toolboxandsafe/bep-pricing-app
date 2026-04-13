@@ -1026,6 +1026,19 @@ def calculate_route(pickups, deliveries):
     pickups = [clean_address_for_geocoding(p) for p in pickups]
     deliveries = [clean_address_for_geocoding(d) for d in deliveries]
 
+    # Dedupe AFTER cleaning so "PV pool" and "PV Pool 17648 N 40th St"
+    # collapse to one stop. Preserve order (dict keeps insertion order).
+    def _dedupe(items):
+        seen = {}
+        for it in items:
+            key = re.sub(r'\s+', ' ', (it or '').strip().lower()).rstrip(' ,.')
+            if key and key not in seen:
+                seen[key] = it
+        return list(seen.values())
+
+    pickups = _dedupe(pickups)
+    deliveries = _dedupe(deliveries)
+
     # Build route
     route = [HQ_ADDRESS]
     route.extend(pickups)
