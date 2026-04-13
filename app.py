@@ -1907,7 +1907,7 @@ if page == "📧 From Email":
                                                 "unique_deliveries": unique_deliveries,
                                                 "num_machines": len(data.get('machines', [])),
                                                 "other_notes": data.get('other_notes'),
-                                                "route": route_data.get("route", []),
+                                                "route": (st.session_state.get('email_route') or {}).get("route", []),
                                                 **quote
                                             }
                                             
