@@ -542,11 +542,42 @@ GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY", "")
 # EXCEL PARSING - BEP REQUEST TAB (IMPROVED)
 # =============================================================================
 
+def _looks_like_full_address(text):
+    """True if text contains a street number + street type (a real address)."""
+    if not text or len(text) < 10:
+        return False
+    return bool(re.search(
+        r'\d+\s+[A-Z0-9\s\.\'-]+?(?:ST|AVE|BLVD|RD|DR|LN|WAY|PKWY|HWY|STREET|AVENUE|DRIVE|ROAD|LANE|BOULEVARD|HIGHWAY|PARKWAY|CIR|CIRCLE|CT|COURT|PL|PLACE)\b',
+        text.upper()
+    ))
+
+def prebuild_address_lookup(rows):
+    """
+    Pre-pass over all rows: find every cell that looks like a full address and
+    store lookups by (a) the address's own name-prefix (text before the first
+    street number), and (b) the hardcoded keyword list. This lets the main
+    parser resolve name-only cells regardless of whether the full version
+    appears before or after them in the sheet.
+    """
+    known = {}
+    for row in rows:
+        for cell in row:
+            if not cell or not _looks_like_full_address(cell):
+                continue
+            store_address_keywords(cell, known)
+            # Extract name-prefix: everything before the first street number
+            m = re.match(r'^([^\d]+?)\s+\d', cell)
+            if m:
+                prefix = m.group(1).strip(' -,:').upper()
+                if len(prefix) >= 3 and prefix not in known:
+                    known[prefix] = cell
+    return known
+
 def store_address_keywords(full_address, known_addresses):
     """Extract keywords from a full address and store for later lookup"""
     if not full_address or len(full_address) < 15:
         return
-    
+
     addr_upper = full_address.upper()
     
     # Extract potential short names (facility names, building names)
@@ -738,8 +769,10 @@ def parse_bep_excel_v2(uploaded_file):
         current_machine = None
         current_section = None
         
-        # Track all full addresses we've seen (for resolving short names)
-        known_addresses = {}
+        # Track all full addresses we've seen (for resolving short names).
+        # Pre-pass the whole sheet so forward references (short name appearing
+        # before its full address) resolve correctly too.
+        known_addresses = prebuild_address_lookup(rows[:end_row])
         
         for row_idx in range(start_row, end_row):
             row = rows[row_idx]
