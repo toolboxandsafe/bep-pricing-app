@@ -565,12 +565,25 @@ def prebuild_address_lookup(rows):
             if not cell or not _looks_like_full_address(cell):
                 continue
             store_address_keywords(cell, known)
-            # Extract name-prefix: everything before the first street number
+            # Extract name-prefix: text before the first street number
             m = re.match(r'^([^\d]+?)\s+\d', cell)
             if m:
                 prefix = m.group(1).strip(' -,:').upper()
                 if len(prefix) >= 3 and prefix not in known:
                     known[prefix] = cell
+            # Extract name-suffix: text AFTER the street suffix word, for cases
+            # where the facility name comes after the address
+            s = re.search(
+                r'(?:STREET|ST|AVENUE|AVE|BLVD|BOULEVARD|ROAD|RD|DRIVE|DR|LANE|LN|WAY|PARKWAY|PKWY|HIGHWAY|HWY|COURT|CT|CIRCLE|CIR|PLACE|PL)\b[\s,]+([A-Za-z][A-Za-z\s]{2,40}?)(?:\s+\d|\s*$|,)',
+                cell, re.IGNORECASE
+            )
+            if s:
+                suffix = s.group(1).strip(' -,:').upper()
+                # Skip if it's obviously a city/state/noise
+                if (len(suffix) >= 3 and suffix not in known
+                        and not re.match(r'^(PHOENIX|TUCSON|MESA|CHANDLER|GILBERT|TEMPE|AZ|ARIZONA)$', suffix)
+                        and suffix.upper() not in [w.upper() for w in NOISE_TAIL_WORDS]):
+                    known[suffix] = cell
     return known
 
 def store_address_keywords(full_address, known_addresses):
@@ -991,6 +1004,30 @@ def _save_cached_route(origin, destination, distance_miles, duration_minutes):
     except Exception as e:
         st.warning(f"route_cache write failed: {type(e).__name__}: {e}")
 
+AZ_CITIES = [
+    'phoenix', 'tucson', 'mesa', 'chandler', 'gilbert', 'tempe', 'scottsdale',
+    'glendale', 'peoria', 'yuma', 'flagstaff', 'prescott', 'surprise', 'avondale',
+    'goodyear', 'buckeye', 'casa grande', 'sierra vista', 'maricopa', 'oro valley',
+    'queen creek', 'kingman', 'marana', 'el mirage', 'san luis', 'sahuarita',
+    'fountain hills', 'nogales', 'douglas', 'eloy', 'payson', 'show low',
+    'cottonwood', 'camp verde', 'bullhead city', 'lake havasu city', 'apache junction',
+]
+NOISE_TAIL_WORDS = [
+    'floor', 'fl', 'suite', 'ste', 'lobby', 'room', 'rm', 'BR', 'bldg', 'building',
+    'unit', 'apt', 'dept', 'department', 'basement', 'bsmt', 'mezzanine',
+    'office', 'wing', 'pod', 'cube', 'dock', 'warehouse',
+]
+
+def _detect_az_city(text):
+    """Return the first AZ city mentioned in text, or None. Also maps PHX → Phoenix."""
+    if re.search(r'\bPHX\b', text, re.IGNORECASE):
+        return 'Phoenix'
+    t = text.lower()
+    for city in AZ_CITIES:
+        if re.search(r'\b' + re.escape(city) + r'\b', t):
+            return city.title()
+    return None
+
 def clean_address_for_geocoding(raw):
     """
     Strip noise from messy BEP address strings so Google Maps can geocode them.
@@ -999,34 +1036,48 @@ def clean_address_for_geocoding(raw):
     street address, e.g.:
       "MCAO 4th floor BR 225 W Madison Street PHX"
       "DES Clarendon Avenue 4000 N central 19th floor"
-    This extracts the usable street portion (from the first 3+ digit street
-    number onward), strips trailing floor/room/suite/lobby noise, normalizes
-    PHX → Phoenix AZ, and appends a city/state hint if missing.
+    This extracts the usable street portion (from the first plausible street
+    number onward), strips floor/room/suite/building noise, normalizes PHX →
+    Phoenix AZ, and appends a city/state hint if missing.
     """
     if not raw:
         return raw
     text = re.sub(r'\s+', ' ', str(raw).strip())
 
-    # Find first 3+ digit number — that's almost certainly the street number.
-    # (2-digit ordinals like "4th" are skipped.)
-    m = re.search(r'\b(\d{3,})\b', text)
-    if not m:
-        return text  # No street number — pass through (may fail, but nothing to clean)
+    # Detect any AZ city mentioned anywhere in the ORIGINAL text — we'll use
+    # this as the fallback city instead of blindly defaulting to Phoenix.
+    city = _detect_az_city(text) or 'Phoenix'
 
-    tail = text[m.start():]
+    # Find a plausible street number. A 5-digit zip at end-of-string (e.g.
+    # "Gilbert, AZ 85295") is NOT a street number — skip it.
+    num_match = None
+    for m in re.finditer(r'\b(\d{3,})\b', text):
+        num = m.group(1)
+        # Skip 5-digit numbers that look like zip codes (near end or after state)
+        if len(num) == 5 and re.search(r'\b(AZ|arizona)\b', text[:m.start()], re.IGNORECASE):
+            continue
+        num_match = m
+        break
 
-    # Strip trailing floor/room/suite noise
-    tail = re.sub(r'\s+\d+(?:st|nd|rd|th)\s+floor.*$', '', tail, flags=re.IGNORECASE)
-    tail = re.sub(r'\s+floor(?:\s+\w+)?.*$', '', tail, flags=re.IGNORECASE)
-    tail = re.sub(r'\s+(?:BR|suite|ste|lobby|room|rm)\b.*$', '', tail, flags=re.IGNORECASE)
-    tail = re.sub(r'\s+#\s*\d+\s*$', '', tail)  # trailing "# 102" only (keep it if followed by city)
+    if not num_match:
+        # No street number → normalize PHX and return (may still fail, nothing to extract)
+        return re.sub(r'\bPHX\b', 'Phoenix, AZ', text, flags=re.IGNORECASE).strip(' ,')
+
+    tail = text[num_match.start():]
+
+    # Strip trailing floor/room/suite/building noise
+    noise_alt = '|'.join(NOISE_TAIL_WORDS)
+    tail = re.sub(r'\s+\d+(?:st|nd|rd|th)\s+(?:' + noise_alt + r')\b.*$', '', tail, flags=re.IGNORECASE)
+    tail = re.sub(r'\s+(?:' + noise_alt + r')\b.*$', '', tail, flags=re.IGNORECASE)
+    tail = re.sub(r'\s+#\s*\w+\s*$', '', tail)  # trailing "# 102" at end only
 
     # Normalize PHX → Phoenix, AZ
     tail = re.sub(r'\bPHX\b', 'Phoenix, AZ', tail, flags=re.IGNORECASE)
 
-    # Append city/state hint if nothing identifiable is present
-    if not re.search(r'\b(phoenix|tucson|mesa|chandler|gilbert|tempe|scottsdale|glendale|peoria|yuma|flagstaff|prescott|AZ)\b', tail, re.IGNORECASE):
-        tail = tail.rstrip(' ,') + ', Phoenix, AZ'
+    # Append city/state hint if nothing identifiable is present in the tail
+    az_pattern = r'\b(' + '|'.join(re.escape(c) for c in AZ_CITIES) + r'|AZ|arizona)\b'
+    if not re.search(az_pattern, tail, re.IGNORECASE):
+        tail = tail.rstrip(' ,') + f', {city}, AZ'
 
     return re.sub(r'\s+', ' ', tail).strip(' ,')
 
