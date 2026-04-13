@@ -1097,6 +1097,131 @@ def clean_and_dedupe_addresses(items):
             seen[key] = it
     return list(seen.values())
 
+def _get_leg(origin, destination):
+    """Return (distance_miles, duration_minutes) for one leg — cache-aware."""
+    cached = _get_cached_route(origin, destination)
+    if cached:
+        return float(cached["distance_miles"]), float(cached["duration_minutes"])
+    data = get_distance_matrix([origin], [destination])
+    if data and data["rows"][0]["elements"][0]["status"] == "OK":
+        el = data["rows"][0]["elements"][0]
+        dm = el["distance"]["value"] / 1609.34
+        dur = el["duration"]["value"] / 60
+        _save_cached_route(origin, destination, round(dm, 1), round(dur, 1))
+        return dm, dur
+    return None, None
+
+def calculate_optimal_route(machines):
+    """
+    Precedence-constrained TSP: visit each unique location once, minimize
+    total drive time. Constraint: for each machine, its pickup location must
+    be visited at or before its delivery location (same-stop is allowed).
+
+    Returns the same dict shape as calculate_route so calculate_quote works.
+    """
+    # Clean each machine's pickup/delivery
+    pairs = []
+    for mch in machines:
+        p = clean_address_for_geocoding(mch.get("pickup"))
+        d = clean_address_for_geocoding(mch.get("delivery"))
+        if p and d:
+            pairs.append((p, d))
+
+    if not pairs:
+        return {"legs": [], "total_duration_minutes": 0, "max_distance_miles": 0, "route": [HQ_ADDRESS, HQ_ADDRESS]}
+
+    # Build unique location index (dedupe by punctuation-insensitive key)
+    locs = []          # index -> canonical address string
+    key_to_idx = {}    # dedupe key -> index
+    def _idx(addr):
+        k = _dedupe_key(addr)
+        if k not in key_to_idx:
+            key_to_idx[k] = len(locs)
+            locs.append(addr)
+        return key_to_idx[k]
+
+    precedence = []  # list of (pickup_idx, delivery_idx)
+    for p, d in pairs:
+        pi, di = _idx(p), _idx(d)
+        if pi != di:
+            precedence.append((pi, di))
+
+    n = len(locs)
+
+    # Fetch full (n+1) × (n+1) duration/distance matrix (HQ is index 0)
+    nodes = [HQ_ADDRESS] + locs
+    N = n + 1
+    dur = [[0.0] * N for _ in range(N)]
+    dist = [[0.0] * N for _ in range(N)]
+    for i in range(N):
+        for j in range(N):
+            if i == j:
+                continue
+            dm, dt = _get_leg(nodes[i], nodes[j])
+            if dm is None:
+                dm, dt = 20.0, 30.0  # fallback estimate
+            dist[i][j] = dm
+            dur[i][j] = dt
+
+    # Brute-force best permutation of loc indices satisfying precedence.
+    # n! grows fast but for n<=10 it's instant; for n<=12 it's still seconds.
+    from itertools import permutations
+    best_perm = None
+    best_dur = float("inf")
+
+    # Precompute which indices have predecessors, to prune earlier
+    preds = {i: set() for i in range(n)}
+    for b, a in precedence:
+        preds[a].add(b)
+
+    for perm in permutations(range(n)):
+        # Precedence check
+        seen = set()
+        ok = True
+        for idx in perm:
+            if not preds[idx].issubset(seen):
+                ok = False
+                break
+            seen.add(idx)
+        if not ok:
+            continue
+        # Total duration: HQ -> perm[0] -> ... -> perm[-1] -> HQ
+        total = dur[0][perm[0] + 1]
+        for i in range(n - 1):
+            total += dur[perm[i] + 1][perm[i + 1] + 1]
+        total += dur[perm[-1] + 1][0]
+        if total < best_dur:
+            best_dur = total
+            best_perm = perm
+
+    if best_perm is None:
+        # No valid ordering — fall back to original simple routing
+        return calculate_route([p for p, _ in pairs], [d for _, d in pairs])
+
+    # Build legs list in the best order
+    sequence = [0] + [i + 1 for i in best_perm] + [0]
+    legs = []
+    total_duration = 0.0
+    max_dist = 0.0
+    for i in range(len(sequence) - 1):
+        a, b = sequence[i], sequence[i + 1]
+        dm, dt = dist[a][b], dur[a][b]
+        legs.append({
+            "from": nodes[a],
+            "to": nodes[b],
+            "distance_miles": round(dm, 1),
+            "duration_minutes": round(dt, 1),
+        })
+        total_duration += dt
+        max_dist = max(max_dist, dm)
+
+    return {
+        "legs": legs,
+        "total_duration_minutes": round(total_duration, 1),
+        "max_distance_miles": round(max_dist, 1),
+        "route": [nodes[i] for i in sequence],
+    }
+
 def calculate_route(pickups, deliveries):
     """
     Calculate sequential route: HQ → Pickups → Deliveries → HQ
@@ -1719,16 +1844,17 @@ if page == "📧 From Email":
                         
                         with col2:
                             # Get unique addresses
-                            unique_pickups = clean_and_dedupe_addresses([m["pickup"] for m in data.get('machines', []) if m.get("pickup")])
-                            unique_deliveries = clean_and_dedupe_addresses([m["delivery"] for m in data.get('machines', []) if m.get("delivery")])
+                            machines_list = data.get('machines', [])
+                            unique_pickups = clean_and_dedupe_addresses([m["pickup"] for m in machines_list if m.get("pickup")])
+                            unique_deliveries = clean_and_dedupe_addresses([m["delivery"] for m in machines_list if m.get("delivery")])
                             
                             if not unique_pickups and not unique_deliveries:
                                 st.error("❌ No pickup or delivery addresses found. Cannot calculate quote.")
                                 st.info("This Excel may be a Work Order only (no Move Request data).")
                             elif st.button("🧮 Calculate Quote", type="primary", use_container_width=True):
                                 with st.spinner("Calculating route..."):
-                                    route_data = calculate_route(unique_pickups, unique_deliveries)
-                                    quote = calculate_quote(route_data, len(data.get('machines', [])), unique_pickups, unique_deliveries)
+                                    route_data = calculate_optimal_route(machines_list)
+                                    quote = calculate_quote(route_data, len(machines_list), unique_pickups, unique_deliveries)
                                     
                                     st.session_state['email_quote'] = quote
                                     st.session_state['email_route'] = route_data
@@ -2226,7 +2352,7 @@ elif page == "📤 New Request":
                 if st.button("🧮 CALCULATE ROUTE & QUOTE", type="primary", use_container_width=True):
                     if unique_pickups or unique_deliveries:
                         with st.spinner("Calculating route via Google Maps..."):
-                            route_data = calculate_route(unique_pickups, unique_deliveries)
+                            route_data = calculate_optimal_route(edited_machines)
                             quote = calculate_quote(route_data, len(edited_machines), unique_pickups, unique_deliveries)
                             
                             st.session_state['route_data'] = route_data
