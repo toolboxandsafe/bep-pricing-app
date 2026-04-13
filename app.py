@@ -1812,22 +1812,25 @@ elif page == "📝 Generate Quote":
                 # Show PDF options if generated
                 if 'quote_pdf' in st.session_state and st.session_state.get('quote_pdf_card_id') == card_id:
                     st.success(f"✅ QUOTE PDF ready! ({st.session_state.get('quote_pdf_hours', '')} hours)")
-                    
+
+                    safe_title = re.sub(r'[\\/:*?"<>|]+', '_', card_info.get('name', '') or card_id).strip().strip('.')
+                    safe_title = f"QUOTE {safe_title[:150]}" if safe_title else f"QUOTE {card_id}"
+
                     col_a, col_b = st.columns(2)
-                    
+
                     with col_a:
                         st.download_button(
                             "⬇️ Download QUOTE PDF",
                             data=st.session_state['quote_pdf'],
-                            file_name=f"QUOTE_{card_id}_{datetime.now().strftime('%Y%m%d')}.pdf",
+                            file_name=f"{safe_title}.pdf",
                             mime="application/pdf",
                             use_container_width=True
                         )
-                    
+
                     with col_b:
                         if st.button("📎 Attach to Trello Card", use_container_width=True):
                             with st.spinner("Attaching..."):
-                                filename = f"QUOTE_{datetime.now().strftime('%Y%m%d')}.pdf"
+                                filename = f"{safe_title}.pdf"
                                 if attach_pdf_to_card(card_id, st.session_state['quote_pdf'], filename, trello_key, trello_token):
                                     st.success(f"✅ QUOTE PDF attached!")
                                     st.markdown(f"[Open Card]({st.session_state.get('quote_pdf_card_url')})")
