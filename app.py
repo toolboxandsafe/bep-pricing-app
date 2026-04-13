@@ -978,11 +978,54 @@ def _save_cached_route(origin, destination, distance_miles, duration_minutes):
     except Exception as e:
         st.warning(f"route_cache write failed: {type(e).__name__}: {e}")
 
+def clean_address_for_geocoding(raw):
+    """
+    Strip noise from messy BEP address strings so Google Maps can geocode them.
+
+    BEP Excel files interleave floor/room/facility-name text with the actual
+    street address, e.g.:
+      "MCAO 4th floor BR 225 W Madison Street PHX"
+      "DES Clarendon Avenue 4000 N central 19th floor"
+    This extracts the usable street portion (from the first 3+ digit street
+    number onward), strips trailing floor/room/suite/lobby noise, normalizes
+    PHX → Phoenix AZ, and appends a city/state hint if missing.
+    """
+    if not raw:
+        return raw
+    text = re.sub(r'\s+', ' ', str(raw).strip())
+
+    # Find first 3+ digit number — that's almost certainly the street number.
+    # (2-digit ordinals like "4th" are skipped.)
+    m = re.search(r'\b(\d{3,})\b', text)
+    if not m:
+        return text  # No street number — pass through (may fail, but nothing to clean)
+
+    tail = text[m.start():]
+
+    # Strip trailing floor/room/suite noise
+    tail = re.sub(r'\s+\d+(?:st|nd|rd|th)\s+floor.*$', '', tail, flags=re.IGNORECASE)
+    tail = re.sub(r'\s+floor(?:\s+\w+)?.*$', '', tail, flags=re.IGNORECASE)
+    tail = re.sub(r'\s+(?:BR|suite|ste|lobby|room|rm)\b.*$', '', tail, flags=re.IGNORECASE)
+    tail = re.sub(r'\s+#\s*\d+\s*$', '', tail)  # trailing "# 102" only (keep it if followed by city)
+
+    # Normalize PHX → Phoenix, AZ
+    tail = re.sub(r'\bPHX\b', 'Phoenix, AZ', tail, flags=re.IGNORECASE)
+
+    # Append city/state hint if nothing identifiable is present
+    if not re.search(r'\b(phoenix|tucson|mesa|chandler|gilbert|tempe|scottsdale|glendale|peoria|yuma|flagstaff|prescott|AZ)\b', tail, re.IGNORECASE):
+        tail = tail.rstrip(' ,') + ', Phoenix, AZ'
+
+    return re.sub(r'\s+', ' ', tail).strip(' ,')
+
 def calculate_route(pickups, deliveries):
     """
     Calculate sequential route: HQ → Pickups → Deliveries → HQ
     Returns list of legs with distance and duration
     """
+    # Clean messy BEP address strings before sending to Google Maps
+    pickups = [clean_address_for_geocoding(p) for p in pickups]
+    deliveries = [clean_address_for_geocoding(d) for d in deliveries]
+
     # Build route
     route = [HQ_ADDRESS]
     route.extend(pickups)
