@@ -632,7 +632,20 @@ def resolve_short_address(addr_text, known_addresses):
     for keyword, full_addr in known_addresses.items():
         if addr_upper in full_addr.upper():
             return full_addr
-    
+
+    # Fuzzy match against known keys to catch typos like "Conner" vs "Connor"
+    from difflib import SequenceMatcher
+    best_ratio = 0.0
+    best_addr = None
+    for keyword, full_addr in known_addresses.items():
+        # Compare whole strings — fine for short facility names
+        ratio = SequenceMatcher(None, addr_upper, keyword).ratio()
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_addr = full_addr
+    if best_ratio >= 0.85:
+        return best_addr
+
     # No match found, return original
     return addr_text
 
