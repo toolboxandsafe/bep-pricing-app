@@ -1017,12 +1017,18 @@ def clean_address_for_geocoding(raw):
 
     return re.sub(r'\s+', ' ', tail).strip(' ,')
 
+def _dedupe_key(text):
+    """Aggressive normalization for dedup: lowercase, strip ALL punctuation,
+    collapse whitespace. So '225 W Madison St, Phoenix, AZ' and
+    '225 W Madison St Phoenix AZ' hash to the same key."""
+    return re.sub(r'\s+', ' ', re.sub(r'[^a-z0-9]+', ' ', (text or '').lower())).strip()
+
 def clean_and_dedupe_addresses(items):
     """Clean each address for geocoding, then dedupe while preserving order."""
     cleaned = [clean_address_for_geocoding(i) for i in items if i]
     seen = {}
     for it in cleaned:
-        key = re.sub(r'\s+', ' ', (it or '').strip().lower()).rstrip(' ,.')
+        key = _dedupe_key(it)
         if key and key not in seen:
             seen[key] = it
     return list(seen.values())
