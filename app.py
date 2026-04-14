@@ -2287,10 +2287,10 @@ def generate_invoice_from_card(card_id, job_type_label, note_text, api_key, api_
         except Exception as e:
             result["warnings"].append(f"PDF attach error: {type(e).__name__}: {e}")
 
-    # --- 11b. Prepend INVOICE# to the Trello card title (skip if already present) ---
+    # --- 11b. Prepend INVOICE{num} to the Trello card title (skip if already present) ---
     try:
-        if not re.match(r'^\s*INVOICE#', card_name, re.IGNORECASE):
-            new_title = f"INVOICE# {invoice_num} {card_name}".strip()
+        if not re.match(r'^\s*INVOICE\d', card_name, re.IGNORECASE):
+            new_title = f"INVOICE{invoice_num} {card_name}".strip()
             put_url = f"https://api.trello.com/1/cards/{card_id}"
             requests.put(
                 put_url,
