@@ -1697,6 +1697,488 @@ def fill_worksheet_and_generate_pdf(excel_bytes, quote_amount, signature="Ryan K
             return None, hours
 
 # =============================================================================
+# INVOICE GENERATION (Google Sheets + Trello)
+# =============================================================================
+
+INVOICE_SPREADSHEET_ID = "1pUuWQbdStkjnm9V0KZf_B-B0jynZU3dmxgGsOQyRNas"
+INVOICE_TEMPLATE_TAB = "TEMPLATE"   # "Move Template"
+INVOICE_PENDING_TAB = "Pending Payments"
+INVOICE_BEP_COMPLETED_LIST = "BEP Completed"
+
+# Templates the user can pick on the Generate INV page.
+# For now only the move template is wired up.
+INVOICE_JOB_TYPES = {
+    "Move Template": INVOICE_TEMPLATE_TAB,
+    # "Install & Setup": "INSTAL N SET UP TEMPLATE",  # future
+    # "Repair": "REPAIR TEMPLATE",                     # future
+}
+
+def _get_gspread_client():
+    """
+    Load service account JSON from the GOOGLE_SERVICE_ACCOUNT_JSON env var
+    and return an authorized gspread client. Returns (client, creds) or (None, None).
+    """
+    sa_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
+    if not sa_json:
+        return None, None
+    try:
+        import gspread
+        from google.oauth2.service_account import Credentials
+        info = json.loads(sa_json)
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ]
+        creds = Credentials.from_service_account_info(info, scopes=scopes)
+        return gspread.authorize(creds), creds
+    except Exception as e:
+        st.error(f"Failed to load Google service account: {type(e).__name__}: {e}")
+        return None, None
+
+def clean_card_title_for_tab(title):
+    """
+    Clean Trello card title for use as a sheet-tab suffix.
+    - Strip leading Fwd:/Re:/Fw: prefixes (any case, any repetition)
+    - Remove price tokens: $\\d+, \\$?xxx, "$400 change to $500", etc.
+    - Collapse whitespace and trim
+    - Truncate to 40 chars so the full tab name stays readable
+    """
+    if not title:
+        return ""
+    t = str(title)
+    # Strip Fwd:/Re:/Fw: prefixes repeatedly
+    for _ in range(5):
+        new = re.sub(r'^\s*(?:fwd?|re)\s*:\s*', '', t, flags=re.IGNORECASE)
+        if new == t:
+            break
+        t = new
+    # Remove "$N change to $M" patterns first (before bare $N stripping)
+    t = re.sub(
+        r'\$?[\d,]+(?:\.\d+)?\s*change\s*to\s*\$?[\d,]+(?:\.\d+)?',
+        '', t, flags=re.IGNORECASE,
+    )
+    # Remove "$xxx" placeholder and bare "$N" (with optional commas/decimals)
+    t = re.sub(r'\$\s*x+', '', t, flags=re.IGNORECASE)
+    t = re.sub(r'\$\s*[\d,]+(?:\.\d+)?', '', t)
+    # Strip separator dashes left behind ("- - ")
+    t = re.sub(r'\s*-\s*-\s*', ' - ', t)
+    t = re.sub(r'\s*-\s*$', '', t)
+    t = re.sub(r'^\s*-\s*', '', t)
+    # Collapse whitespace
+    t = re.sub(r'\s+', ' ', t).strip(' -')
+    return t[:40]
+
+def extract_bep_auth_from_title(title):
+    """
+    Extract the BEP authorization number from the card title.
+    Pattern: starts with '77', ends with 'A1' (case-insensitive), alphanumeric in between.
+    Example: '777037858A1'
+    """
+    if not title:
+        return None
+    m = re.search(r'\b(77\w*?[aA]1)\b', str(title))
+    return m.group(1).upper() if m else None
+
+def parse_machines_from_card_desc(desc):
+    """
+    Parse the **MACHINES & LOCATIONS** section of a card description created
+    by create_trello_card. Returns list of dicts with type/pickup/delivery.
+    """
+    machines = []
+    if not desc:
+        return machines
+    # Each machine: **Machine N:** type \n  - Pickup: X \n  - Delivery: Y
+    pattern = re.compile(
+        r'\*\*Machine\s*(\d+):\*\*\s*(.+?)\n\s*-\s*Pickup:\s*(.+?)\n\s*-\s*Delivery:\s*(.+?)(?:\n|$)',
+        re.IGNORECASE
+    )
+    for m in pattern.finditer(desc):
+        machines.append({
+            "number": m.group(1).strip(),
+            "type": m.group(2).strip(),
+            "pickup": m.group(3).strip(),
+            "delivery": m.group(4).strip(),
+        })
+    return machines
+
+def extract_total_hours_from_desc(desc):
+    """
+    Sum Drive Time + Job Time + Buffer from the card desc and divide by 60.
+    Returns a float rounded to 2 decimals, or None if nothing found.
+    """
+    if not desc:
+        return None
+    def _num(label):
+        m = re.search(label + r'[:\s]*(\d+(?:\.\d+)?)\s*min', desc, re.IGNORECASE)
+        return float(m.group(1)) if m else 0.0
+    drive = _num(r'Drive\s*Time')
+    job = _num(r'Job\s*Time')
+    buf = _num(r'Buffer')
+    total = drive + job + buf
+    if total <= 0:
+        return None
+    return round(total / 60.0, 2)
+
+def find_move_to_list_date(card_id, target_list_name, api_key, api_token):
+    """
+    Return the ISO date string of the most recent action where this card
+    was moved INTO a list named target_list_name. Returns None if not found.
+    """
+    url = f"https://api.trello.com/1/cards/{card_id}/actions"
+    params = {
+        "key": api_key,
+        "token": api_token,
+        "filter": "updateCard:idList",
+        "limit": 1000,
+    }
+    try:
+        r = requests.get(url, params=params, timeout=30)
+        if r.status_code != 200:
+            return None
+        actions = r.json()
+    except Exception:
+        return None
+    target_lower = target_list_name.strip().lower()
+    for action in actions:  # Trello returns newest first
+        data = action.get("data", {})
+        list_after = (data.get("listAfter") or {}).get("name", "")
+        if list_after.strip().lower() == target_lower:
+            return action.get("date")
+    return None
+
+def _col_last_data_row(ws, col_index=1):
+    """Find the last row in a column that has a non-empty value (1-indexed)."""
+    values = ws.col_values(col_index)
+    for i in range(len(values), 0, -1):
+        if values[i - 1] not in (None, ""):
+            return i
+    return 0
+
+def get_next_invoice_number(spreadsheet):
+    """Scan all tab names for INV##### pattern, return max + 1."""
+    max_num = 10476  # floor: the highest currently-existing invoice at time of writing
+    for ws in spreadsheet.worksheets():
+        m = re.match(r'^INV(\d{4,6})\b', ws.title)
+        if m:
+            try:
+                n = int(m.group(1))
+                if n > max_num:
+                    max_num = n
+            except ValueError:
+                pass
+    return max_num + 1
+
+def _fill_machine_block(ws, block_row, machine_number, machine):
+    """
+    Fill one 4-row machine block. block_row is the header row (A12, A16, ...).
+    Layout per template:
+      A{r}   "{n}.0"       B{r}   "Item(s) to be Moved:"   C{r}  type       I{r}  "1.0"
+      B{r+1} "Pick Up Site:"                                 C{r+1} pickup
+      B{r+2} "Delivery Site:"                                C{r+2} delivery
+    """
+    updates = [
+        {"range": f"A{block_row}",    "values": [[f"{machine_number}.0"]]},
+        {"range": f"B{block_row}",    "values": [["Item(s) to be Moved:"]]},
+        {"range": f"C{block_row}",    "values": [[machine.get("type", "")]]},
+        {"range": f"H{block_row}",    "values": [["Qty"]]},
+        {"range": f"I{block_row}",    "values": [["1.0"]]},
+        {"range": f"B{block_row + 1}", "values": [["Pick Up Site:"]]},
+        {"range": f"C{block_row + 1}", "values": [[machine.get("pickup", "")]]},
+        {"range": f"B{block_row + 2}", "values": [["Delivery Site:"]]},
+        {"range": f"C{block_row + 2}", "values": [[machine.get("delivery", "")]]},
+    ]
+    ws.batch_update(updates, value_input_option="USER_ENTERED")
+
+def generate_invoice_from_card(card_id, job_type_label, note_text, api_key, api_token):
+    """
+    End-to-end invoice generation:
+      1. Fetch card (name, desc, idBoard)
+      2. Parse title/desc for auth#, machines, hours
+      3. Find move-to-BEP-Completed date (fallback: today)
+      4. Duplicate template in the Google Sheet, place to right of TEMPLATE
+      5. Fill cells, insert extra machine blocks if needed
+      6. Export new tab as PDF
+      7. Attach PDF to Trello card
+      8. Append row to Pending Payments
+    Returns dict with keys: ok, invoice_number, tab_name, tab_gid, pdf_bytes, pdf_filename,
+    sheet_url, total_amount, warnings (list), error (str or None).
+    """
+    result = {
+        "ok": False, "invoice_number": None, "tab_name": None, "tab_gid": None,
+        "pdf_bytes": None, "pdf_filename": None, "sheet_url": None,
+        "total_amount": None, "warnings": [], "error": None,
+    }
+
+    # --- 1. Fetch card ---
+    if not api_key or not api_token:
+        result["error"] = "Trello credentials missing (TRELLO_API_KEY / TRELLO_TOKEN)."
+        return result
+    card_info = get_card_info(card_id, api_key, api_token)
+    if not card_info:
+        result["error"] = f"Could not fetch Trello card {card_id}."
+        return result
+
+    # Need idBoard too — get_card_info only fetches name/desc/shortUrl
+    try:
+        full = requests.get(
+            f"https://api.trello.com/1/cards/{card_id}",
+            params={"key": api_key, "token": api_token, "fields": "name,desc,idBoard,shortUrl"},
+            timeout=30,
+        ).json()
+    except Exception as e:
+        result["error"] = f"Trello API error: {e}"
+        return result
+
+    card_name = full.get("name", "") or ""
+    card_desc = full.get("desc", "") or ""
+    card_short_url = full.get("shortUrl", "")
+
+    # --- 2. Parse card data ---
+    bep_auth = extract_bep_auth_from_title(card_name)
+    if not bep_auth:
+        result["warnings"].append(
+            "Could not find BEP authorization # (77…A1) in card title. F7 will be blank."
+        )
+    machines = parse_machines_from_card_desc(card_desc)
+    if not machines:
+        result["error"] = "No machines found in card description. Cannot generate invoice."
+        return result
+    total_hours = extract_total_hours_from_desc(card_desc)
+    if total_hours is None:
+        result["warnings"].append(
+            "Could not extract total hours from card description. Hours cell will be blank — fill manually."
+        )
+
+    # --- 3. Move date ---
+    move_date_iso = find_move_to_list_date(card_id, INVOICE_BEP_COMPLETED_LIST, api_key, api_token)
+    if move_date_iso:
+        try:
+            move_date = datetime.fromisoformat(move_date_iso.replace("Z", "+00:00"))
+        except Exception:
+            move_date = datetime.now()
+            result["warnings"].append("Could not parse move-to-BEP-Completed date; using today.")
+    else:
+        move_date = datetime.now()
+        result["warnings"].append(f"Card has no move-to-'{INVOICE_BEP_COMPLETED_LIST}' action; using today as move date.")
+
+    move_date_str = move_date.strftime("%B %d, %Y")
+
+    # --- 4. Open spreadsheet ---
+    gc, creds = _get_gspread_client()
+    if gc is None:
+        result["error"] = (
+            "Google service account not configured. "
+            "Add GOOGLE_SERVICE_ACCOUNT_JSON to Railway env vars and share the template spreadsheet "
+            "with the service account's email as Editor."
+        )
+        return result
+
+    try:
+        spreadsheet = gc.open_by_key(INVOICE_SPREADSHEET_ID)
+    except Exception as e:
+        result["error"] = f"Could not open invoice spreadsheet: {type(e).__name__}: {e}"
+        return result
+
+    # --- 5. Compute next invoice number and tab name ---
+    invoice_num = get_next_invoice_number(spreadsheet)
+    short_desc = clean_card_title_for_tab(card_name)
+    tab_name = f"INV{invoice_num} {short_desc}".strip()
+    # Google Sheets tab names max 100 chars
+    tab_name = tab_name[:99]
+    result["invoice_number"] = invoice_num
+    result["tab_name"] = tab_name
+
+    # --- 6. Duplicate template to the right of TEMPLATE ---
+    template_tab_name = INVOICE_JOB_TYPES.get(job_type_label, INVOICE_TEMPLATE_TAB)
+    try:
+        template_ws = spreadsheet.worksheet(template_tab_name)
+    except Exception as e:
+        result["error"] = f"Template tab '{template_tab_name}' not found: {e}"
+        return result
+
+    # Find template's index, place new tab at index+1 (right side)
+    all_ws = spreadsheet.worksheets()
+    template_index = next((i for i, w in enumerate(all_ws) if w.id == template_ws.id), 0)
+    try:
+        new_ws = spreadsheet.duplicate_sheet(
+            source_sheet_id=template_ws.id,
+            insert_sheet_index=template_index + 1,
+            new_sheet_name=tab_name,
+        )
+    except Exception as e:
+        result["error"] = f"Failed to duplicate template: {type(e).__name__}: {e}"
+        return result
+
+    result["tab_gid"] = new_ws.id
+    result["sheet_url"] = (
+        f"https://docs.google.com/spreadsheets/d/{INVOICE_SPREADSHEET_ID}/edit#gid={new_ws.id}"
+    )
+
+    # --- 7. If more than 4 machines, insert extra blocks ---
+    # Template has 4 pre-drawn blocks at rows 12, 16, 20, 24.
+    # For N > 4, insert (N-4)*4 rows before row 24, then copy the structure of
+    # block 1 (rows 12-15) into each new slot. The original block 4 (which has
+    # the J25/K25/L25 formulas) shifts down; its formulas auto-update.
+    n_machines = len(machines)
+    extra_blocks = max(0, n_machines - 4)
+    if extra_blocks > 0:
+        try:
+            requests_body = []
+            # Insert blank rows before row 24 (0-indexed: row 23)
+            requests_body.append({
+                "insertDimension": {
+                    "range": {
+                        "sheetId": new_ws.id,
+                        "dimension": "ROWS",
+                        "startIndex": 23,
+                        "endIndex": 23 + extra_blocks * 4,
+                    },
+                    "inheritFromBefore": False,
+                }
+            })
+            # Copy block 1 (rows 12-15, 0-indexed 11-15) into each new slot
+            for i in range(extra_blocks):
+                dest_start = 23 + i * 4  # 0-indexed
+                requests_body.append({
+                    "copyPaste": {
+                        "source": {
+                            "sheetId": new_ws.id,
+                            "startRowIndex": 11,
+                            "endRowIndex": 15,
+                            "startColumnIndex": 0,
+                            "endColumnIndex": 12,
+                        },
+                        "destination": {
+                            "sheetId": new_ws.id,
+                            "startRowIndex": dest_start,
+                            "endRowIndex": dest_start + 4,
+                            "startColumnIndex": 0,
+                            "endColumnIndex": 12,
+                        },
+                        "pasteType": "PASTE_NORMAL",
+                    }
+                })
+            spreadsheet.batch_update({"requests": requests_body})
+            # After insertion, re-fetch the worksheet to pick up updated indices
+            new_ws = spreadsheet.worksheet(tab_name)
+        except Exception as e:
+            result["warnings"].append(
+                f"Failed to expand template for {n_machines} machines: {type(e).__name__}: {e}. "
+                f"Only the first 4 machines will be filled."
+            )
+            n_machines = 4
+            machines = machines[:4]
+
+    # --- 8. Fill cells ---
+    try:
+        header_updates = [
+            {"range": f"{tab_name}!L7", "values": [[f"INVOICE # {invoice_num}"]]},
+            {"range": f"{tab_name}!L5", "values": [[move_date_str]]},
+            {"range": f"{tab_name}!F7", "values": [[bep_auth or ""]]},
+            {"range": f"{tab_name}!C29", "values": [[note_text or ""]]},
+        ]
+        spreadsheet.values_batch_update({
+            "valueInputOption": "USER_ENTERED",
+            "data": header_updates,
+        })
+    except Exception as e:
+        result["warnings"].append(f"Header fill failed: {type(e).__name__}: {e}")
+
+    # Machine blocks — row of block i (1-indexed) = 12 + 4*(i-1)
+    for i, machine in enumerate(machines, start=1):
+        block_row = 12 + 4 * (i - 1)
+        try:
+            _fill_machine_block(new_ws, block_row, i, machine)
+        except Exception as e:
+            result["warnings"].append(f"Machine {i} fill failed: {type(e).__name__}: {e}")
+
+    # Total hours — goes in J cell of the LAST block
+    last_block_row = 12 + 4 * (len(machines) - 1)
+    hours_cell = f"J{last_block_row + 1}"  # merged J{r+1}:J{r+2}
+    if total_hours is not None:
+        try:
+            new_ws.update(hours_cell, [[total_hours]], value_input_option="USER_ENTERED")
+        except Exception as e:
+            result["warnings"].append(f"Hours fill failed: {type(e).__name__}: {e}")
+
+    # --- 9. Read computed total from L33 (Balance Due) ---
+    try:
+        balance_val = new_ws.acell("L33", value_render_option="UNFORMATTED_VALUE").value
+        if isinstance(balance_val, (int, float)):
+            result["total_amount"] = float(balance_val)
+        else:
+            try:
+                result["total_amount"] = float(str(balance_val).replace("$", "").replace(",", ""))
+            except Exception:
+                result["total_amount"] = None
+    except Exception:
+        result["total_amount"] = None
+
+    # --- 10. Export tab as PDF ---
+    try:
+        pdf_bytes = export_sheet_tab_as_pdf(INVOICE_SPREADSHEET_ID, new_ws.id, creds)
+        result["pdf_bytes"] = pdf_bytes
+        result["pdf_filename"] = f"INV{invoice_num}.pdf"
+    except Exception as e:
+        result["warnings"].append(f"PDF export failed: {type(e).__name__}: {e}")
+
+    # --- 11. Attach PDF to Trello card ---
+    if result["pdf_bytes"]:
+        try:
+            attached = attach_pdf_to_card(
+                card_id, result["pdf_bytes"], result["pdf_filename"], api_key, api_token
+            )
+            if not attached:
+                result["warnings"].append("PDF attach to Trello card failed.")
+        except Exception as e:
+            result["warnings"].append(f"PDF attach error: {type(e).__name__}: {e}")
+
+    # --- 12. Append row to Pending Payments ---
+    try:
+        pending_ws = spreadsheet.worksheet(INVOICE_PENDING_TAB)
+        last_row = _col_last_data_row(pending_ws, col_index=1)
+        append_row_index = last_row + 1
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        row_values = [
+            invoice_num,                                 # A Invoice
+            today_str,                                   # B Date Sent
+            result["total_amount"] if result["total_amount"] is not None else "",  # C Amount
+            "Pending",                                   # D Status
+            bep_auth or "",                              # E Auth
+            "",                                          # F Item (blank per spec)
+        ]
+        pending_ws.update(
+            f"A{append_row_index}:F{append_row_index}",
+            [row_values],
+            value_input_option="USER_ENTERED",
+        )
+    except Exception as e:
+        result["warnings"].append(f"Pending Payments append failed: {type(e).__name__}: {e}")
+
+    result["ok"] = True
+    return result
+
+def export_sheet_tab_as_pdf(spreadsheet_id, sheet_gid, creds):
+    """
+    Export ONE tab (by gid) of a Google Sheets file as PDF using the Drive export URL.
+    Requires service account creds with Sheets + Drive scopes.
+    """
+    # Refresh the access token so the Authorization header is current
+    from google.auth.transport.requests import Request
+    if not creds.valid:
+        creds.refresh(Request())
+    token = creds.token
+    url = (
+        f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/export"
+        f"?format=pdf&gid={sheet_gid}&portrait=true&size=letter&fitw=true&gridlines=false"
+        f"&printtitle=false&sheetnames=false&pagenum=UNDEFINED&attachment=false"
+    )
+    r = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=60)
+    if r.status_code != 200:
+        raise RuntimeError(f"Sheets PDF export HTTP {r.status_code}: {r.text[:200]}")
+    return r.content
+
+# =============================================================================
 # STREAMLIT UI
 # =============================================================================
 
@@ -1718,7 +2200,7 @@ with st.sidebar:
     
     st.divider()
     
-    page = st.radio("Select Page:", ["📤 New Request", "📧 From Email", "📝 Generate Quote", "📊 Learning Data", "🗺️ Route Cache"], label_visibility="collapsed")
+    page = st.radio("Select Page:", ["📤 New Request", "📧 From Email", "📝 Generate Quote", "📄 Generate INV", "📊 Learning Data", "🗺️ Route Cache"], label_visibility="collapsed")
     
     st.divider()
     
@@ -2174,6 +2656,73 @@ elif page == "📝 Generate Quote":
             st.error("❌ Card not found. Check the URL/ID.")
     elif card_id and not (trello_key and trello_token):
         st.error("⚠️ Trello credentials not configured")
+
+# =============================================================================
+# PAGE: GENERATE INVOICE
+# =============================================================================
+elif page == "📄 Generate INV":
+    st.title("📄 Generate INV")
+    st.markdown("**Create a Google Sheets invoice from a Trello card, export PDF, attach back to card**")
+
+    # Service account status
+    sa_set = bool(os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip())
+    if not sa_set:
+        st.error(
+            "⚠️ Google service account not configured. "
+            "Add `GOOGLE_SERVICE_ACCOUNT_JSON` to Railway env vars and share the template "
+            f"spreadsheet with the service account's email as Editor. "
+            f"Template: https://docs.google.com/spreadsheets/d/{INVOICE_SPREADSHEET_ID}/"
+        )
+    elif not (trello_key and trello_token):
+        st.error("⚠️ Trello credentials missing. Set TRELLO_API_KEY and TRELLO_TOKEN.")
+    else:
+        st.success("✅ Service account and Trello credentials detected.")
+
+    st.divider()
+
+    card_input = st.text_input(
+        "Trello Card URL or ID",
+        placeholder="https://trello.com/c/ABC123 or card ID",
+    )
+    job_type = st.selectbox("Job Type", list(INVOICE_JOB_TYPES.keys()))
+    note_text = st.text_area("Note (optional — goes into C29)", value="", height=80)
+
+    # Resolve card ID
+    card_id_inv = None
+    if card_input:
+        m = re.search(r'/c/([a-zA-Z0-9]+)', card_input)
+        card_id_inv = m.group(1) if m else card_input.strip()
+
+    if card_id_inv and trello_key and trello_token and sa_set:
+        if st.button("🧾 Generate Invoice", type="primary", use_container_width=True):
+            with st.spinner("Generating invoice…"):
+                result = generate_invoice_from_card(
+                    card_id_inv, job_type, note_text, trello_key, trello_token
+                )
+
+            if result.get("error"):
+                st.error(f"❌ {result['error']}")
+            else:
+                st.success(f"✅ Invoice **INV{result['invoice_number']}** generated!")
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    if result.get("sheet_url"):
+                        st.markdown(f"[📊 Open new sheet tab]({result['sheet_url']})")
+                    if result.get("total_amount") is not None:
+                        st.metric("Balance Due", f"${result['total_amount']:,.2f}")
+                with col_b:
+                    if result.get("pdf_bytes"):
+                        st.download_button(
+                            "⬇️ Download Invoice PDF",
+                            data=result["pdf_bytes"],
+                            file_name=result["pdf_filename"],
+                            mime="application/pdf",
+                            use_container_width=True,
+                        )
+                if result.get("warnings"):
+                    st.warning("Completed with warnings:")
+                    for w in result["warnings"]:
+                        st.caption(f"• {w}")
 
 # =============================================================================
 # PAGE 4: LEARNING DATA
