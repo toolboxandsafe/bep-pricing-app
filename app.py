@@ -2013,7 +2013,12 @@ def generate_invoice_from_card(card_id, job_type_label, note_text, api_key, api_
         )
     machines = parse_machines_from_card_desc(card_desc)
     if not machines:
-        result["error"] = "No machines found in card description. Cannot generate invoice."
+        # Stash the raw desc in the result so the UI can show it for debugging
+        result["raw_desc"] = card_desc
+        result["error"] = (
+            "No machines found in card description. Cannot generate invoice. "
+            "Expand the 'Raw card description' section below to see what the parser saw."
+        )
         return result
     total_hours = extract_total_hours_from_desc(card_desc)
     if total_hours is None:
@@ -2774,6 +2779,9 @@ elif page == "📄 Generate INV":
 
             if result.get("error"):
                 st.error(f"❌ {result['error']}")
+                if result.get("raw_desc"):
+                    with st.expander("🔍 Raw card description (debug)", expanded=False):
+                        st.code(result["raw_desc"], language="text")
             else:
                 st.success(f"✅ Invoice **INV{result['invoice_number']}** generated!")
                 col_a, col_b = st.columns(2)
