@@ -2287,6 +2287,19 @@ def generate_invoice_from_card(card_id, job_type_label, note_text, api_key, api_
         except Exception as e:
             result["warnings"].append(f"PDF attach error: {type(e).__name__}: {e}")
 
+    # --- 11b. Prepend INVOICE# to the Trello card title (skip if already present) ---
+    try:
+        if not re.match(r'^\s*INVOICE#', card_name, re.IGNORECASE):
+            new_title = f"INVOICE# {invoice_num} {card_name}".strip()
+            put_url = f"https://api.trello.com/1/cards/{card_id}"
+            requests.put(
+                put_url,
+                params={"key": api_key, "token": api_token, "name": new_title},
+                timeout=30,
+            )
+    except Exception as e:
+        result["warnings"].append(f"Could not rename Trello card: {type(e).__name__}: {e}")
+
     # --- 12. Append row to Pending Payments ---
     try:
         pending_ws = spreadsheet.worksheet(INVOICE_PENDING_TAB)
