@@ -1741,7 +1741,7 @@ def _get_gspread_client():
 def clean_card_title_for_tab(title):
     """
     Clean Trello card title for use as a sheet-tab suffix.
-    - Strip leading Fwd:/Re:/Fw: prefixes (any case, any repetition)
+    - Strip Fwd:/Re:/Fw: tokens (leading OR internal — "Robert - Fwd: Move" → "Robert - Move")
     - Remove price tokens: $\\d+, \\$?xxx, "$400 change to $500", etc.
     - Collapse whitespace and trim
     - Truncate to 40 chars so the full tab name stays readable
@@ -1749,12 +1749,8 @@ def clean_card_title_for_tab(title):
     if not title:
         return ""
     t = str(title)
-    # Strip Fwd:/Re:/Fw: prefixes repeatedly
-    for _ in range(5):
-        new = re.sub(r'^\s*(?:fwd?|re)\s*:\s*', '', t, flags=re.IGNORECASE)
-        if new == t:
-            break
-        t = new
+    # Strip Fwd:/Fw:/Re: tokens anywhere in the string (case-insensitive)
+    t = re.sub(r'\b(?:fwd?|re)\s*:\s*', '', t, flags=re.IGNORECASE)
     # Remove "$N change to $M" patterns first (before bare $N stripping)
     t = re.sub(
         r'\$?[\d,]+(?:\.\d+)?\s*change\s*to\s*\$?[\d,]+(?:\.\d+)?',
@@ -1763,13 +1759,23 @@ def clean_card_title_for_tab(title):
     # Remove "$xxx" placeholder and bare "$N" (with optional commas/decimals)
     t = re.sub(r'\$\s*x+', '', t, flags=re.IGNORECASE)
     t = re.sub(r'\$\s*[\d,]+(?:\.\d+)?', '', t)
-    # Strip separator dashes left behind ("- - ")
+    # Strip leftover separator dashes ("- - ")
     t = re.sub(r'\s*-\s*-\s*', ' - ', t)
     t = re.sub(r'\s*-\s*$', '', t)
     t = re.sub(r'^\s*-\s*', '', t)
     # Collapse whitespace
     t = re.sub(r'\s+', ' ', t).strip(' -')
     return t[:40]
+
+def _format_move_date(dt):
+    """Format date like 'March 30th, 2026' — matches template style, and the
+    ordinal suffix prevents Google Sheets from parsing it as a date value."""
+    day = dt.day
+    if 11 <= day <= 13:
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
+    return dt.strftime(f"%B {day}{suffix}, %Y")
 
 def extract_bep_auth_from_title(title):
     """
@@ -2042,7 +2048,7 @@ def generate_invoice_from_card(card_id, job_type_label, note_text, api_key, api_
         move_date = datetime.now()
         result["warnings"].append(f"Card has no move-to-'{INVOICE_BEP_COMPLETED_LIST}' action; using today as move date.")
 
-    move_date_str = move_date.strftime("%B %d, %Y")
+    move_date_str = _format_move_date(move_date)
 
     # --- 4. Open spreadsheet ---
     gc, creds = _get_gspread_client()
@@ -2165,6 +2171,13 @@ def generate_invoice_from_card(card_id, job_type_label, note_text, api_key, api_
     except Exception as e:
         result["warnings"].append(f"Header fill failed: {type(e).__name__}: {e}")
 
+    # How many blocks exist after possible row insertion. Template always has 4
+    # pre-drawn blocks; if we inserted extra rows, there are now (4 + extra_blocks)
+    # block slots, with the final one (originally block 4) containing the J/K/L
+    # totals formulas at row (24 + extra_blocks*4).
+    total_blocks = 4 + extra_blocks
+    final_block_row = 24 + extra_blocks * 4  # row where the totals formulas live
+
     # Machine blocks — row of block i (1-indexed) = 12 + 4*(i-1)
     for i, machine in enumerate(machines, start=1):
         block_row = 12 + 4 * (i - 1)
@@ -2173,9 +2186,28 @@ def generate_invoice_from_card(card_id, job_type_label, note_text, api_key, api_
         except Exception as e:
             result["warnings"].append(f"Machine {i} fill failed: {type(e).__name__}: {e}")
 
-    # Total hours — goes in J cell of the LAST block
-    last_block_row = 12 + 4 * (len(machines) - 1)
-    hours_cell = f"J{last_block_row + 1}"  # merged J{r+1}:J{r+2}
+    # Clear leftover template data from unused blocks (when N < total_blocks).
+    # Don't touch rows in the final block's J/K/L columns — those hold formulas.
+    for i in range(len(machines) + 1, total_blocks + 1):
+        blank_row = 12 + 4 * (i - 1)
+        blank_updates = [
+            {"range": f"A{blank_row}", "values": [[""]]},
+            {"range": f"B{blank_row}", "values": [[""]]},
+            {"range": f"C{blank_row}", "values": [[""]]},
+            {"range": f"H{blank_row}", "values": [[""]]},
+            {"range": f"I{blank_row}", "values": [[""]]},
+            {"range": f"B{blank_row + 1}", "values": [[""]]},
+            {"range": f"C{blank_row + 1}", "values": [[""]]},
+            {"range": f"B{blank_row + 2}", "values": [[""]]},
+            {"range": f"C{blank_row + 2}", "values": [[""]]},
+        ]
+        try:
+            new_ws.batch_update(blank_updates, value_input_option="USER_ENTERED")
+        except Exception as e:
+            result["warnings"].append(f"Clear unused block {i} failed: {type(e).__name__}: {e}")
+
+    # Total hours — ALWAYS goes in J of the final block (where the L33/L25 formulas reference)
+    hours_cell = f"J{final_block_row + 1}"
     if total_hours is not None:
         try:
             new_ws.update(hours_cell, [[total_hours]], value_input_option="USER_ENTERED")
