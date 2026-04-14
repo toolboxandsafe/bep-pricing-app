@@ -1738,34 +1738,60 @@ def _get_gspread_client():
         st.error(f"Failed to load Google service account: {type(e).__name__}: {e}")
         return None, None
 
-def clean_card_title_for_tab(title):
+def clean_card_title_for_tab(title, bep_auth=None):
     """
     Clean Trello card title for use as a sheet-tab suffix.
-    - Strip Fwd:/Re:/Fw: tokens (leading OR internal — "Robert - Fwd: Move" → "Robert - Move")
-    - Remove price tokens: $\\d+, \\$?xxx, "$400 change to $500", etc.
-    - Collapse whitespace and trim
-    - Truncate to 40 chars so the full tab name stays readable
+    - If title contains Fwd:/Fw:/Re:, keep ONLY the part AFTER the LAST such marker
+      (e.g. "Robert Jeffrey - Fwd: Move request" → "Move request")
+    - Strip price tokens: $N, $xxx, "$N change to $M", with commas/decimals
+    - If a BEP authorization number (bep_auth) is provided and missing from
+      the result, append it — auth # must ALWAYS appear in the tab name
+    - Truncate to leave room for the "INV##### " prefix (~90 chars for the suffix)
     """
     if not title:
-        return ""
+        return bep_auth or ""
     t = str(title)
-    # Strip Fwd:/Fw:/Re: tokens anywhere in the string (case-insensitive)
-    t = re.sub(r'\b(?:fwd?|re)\s*:\s*', '', t, flags=re.IGNORECASE)
-    # Remove "$N change to $M" patterns first (before bare $N stripping)
+
+    # Keep only the text after the LAST Fwd:/Fw:/Re:
+    marker_matches = list(re.finditer(r'\b(?:fwd?|re)\s*:\s*', t, re.IGNORECASE))
+    if marker_matches:
+        t = t[marker_matches[-1].end():]
+
+    # Remove "$N change to $M" patterns
     t = re.sub(
         r'\$?[\d,]+(?:\.\d+)?\s*change\s*to\s*\$?[\d,]+(?:\.\d+)?',
         '', t, flags=re.IGNORECASE,
     )
-    # Remove "$xxx" placeholder and bare "$N" (with optional commas/decimals)
+    # Remove "$xxx" placeholder and bare "$N"
     t = re.sub(r'\$\s*x+', '', t, flags=re.IGNORECASE)
     t = re.sub(r'\$\s*[\d,]+(?:\.\d+)?', '', t)
-    # Strip leftover separator dashes ("- - ")
+
+    # Clean up separator artifacts and whitespace
     t = re.sub(r'\s*-\s*-\s*', ' - ', t)
-    t = re.sub(r'\s*-\s*$', '', t)
-    t = re.sub(r'^\s*-\s*', '', t)
-    # Collapse whitespace
-    t = re.sub(r'\s+', ' ', t).strip(' -')
-    return t[:40]
+    t = re.sub(r'\s+', ' ', t).strip(' -,:')
+
+    # Ensure the auth number is present in the tab name
+    if bep_auth and bep_auth.upper() not in t.upper():
+        t = f"{t} {bep_auth}".strip() if t else bep_auth
+
+    return t[:80]
+
+def extract_final_price_from_title(title):
+    """
+    Return the LAST dollar amount mentioned in the title as a float.
+    Handles: $400, $1,200, $1,200.50, "$400 change to $500" → 500.
+    Returns None if nothing looks like a real price (placeholders like $xxx ignored).
+    """
+    if not title:
+        return None
+    # Find all $N tokens, ignoring $xxx placeholders
+    matches = re.findall(r'\$\s*([\d,]+(?:\.\d+)?)', str(title))
+    if not matches:
+        return None
+    try:
+        return float(matches[-1].replace(",", ""))
+    except ValueError:
+        return None
 
 def _format_move_date(dt):
     """Format date like 'March 30th, 2026' — matches template style, and the
@@ -2030,11 +2056,18 @@ def generate_invoice_from_card(card_id, job_type_label, note_text, api_key, api_
             "Expand the 'Raw card description' section below to see what the parser saw."
         )
         return result
-    total_hours = extract_total_hours_from_desc(card_desc)
-    if total_hours is None:
+
+    # Final price comes from the TITLE. If title has "$400 change to $500", use $500.
+    # Invoice hours are computed as price / 170 (J column × $130 driver + K × $40 mover,
+    # where K=J, so L = J*170). The template's L25/L33 formulas do the rest.
+    final_price = extract_final_price_from_title(card_name)
+    if final_price is None:
+        total_hours = None
         result["warnings"].append(
-            "Could not extract total hours from card description. Hours cell will be blank — fill manually."
+            "Could not find a $ amount in card title. Hours cell will be blank — fill manually."
         )
+    else:
+        total_hours = round(final_price / 170.0, 4)
 
     # --- 3. Move date ---
     move_date_iso = find_move_to_list_date(card_id, INVOICE_BEP_COMPLETED_LIST, api_key, api_token)
@@ -2068,7 +2101,7 @@ def generate_invoice_from_card(card_id, job_type_label, note_text, api_key, api_
 
     # --- 5. Compute next invoice number and tab name ---
     invoice_num = get_next_invoice_number(spreadsheet)
-    short_desc = clean_card_title_for_tab(card_name)
+    short_desc = clean_card_title_for_tab(card_name, bep_auth=bep_auth)
     tab_name = f"INV{invoice_num} {short_desc}".strip()
     # Google Sheets tab names max 100 chars
     tab_name = tab_name[:99]
