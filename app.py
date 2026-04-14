@@ -2305,7 +2305,7 @@ def generate_invoice_from_card(card_id, job_type_label, note_text, api_key, api_
         pending_ws = spreadsheet.worksheet(INVOICE_PENDING_TAB)
         last_row = _col_last_data_row(pending_ws, col_index=1)
         append_row_index = last_row + 1
-        today_str = datetime.now().strftime("%Y-%m-%d")
+        today_str = datetime.now().strftime("%m/%d/%Y")
         row_values = [
             invoice_num,                                 # A Invoice
             today_str,                                   # B Date Sent
