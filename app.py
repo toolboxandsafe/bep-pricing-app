@@ -1781,23 +1781,69 @@ def extract_bep_auth_from_title(title):
 
 def parse_machines_from_card_desc(desc):
     """
-    Parse the **MACHINES & LOCATIONS** section of a card description created
-    by create_trello_card. Returns list of dicts with type/pickup/delivery.
+    Parse machines from a Trello card description. Handles multiple formats:
+
+      Format A (old app output, markdown):
+        **Machine 1:** type
+          - Pickup: X
+          - Delivery: Y
+
+      Format B (current standardized):
+        Machine 1: type
+
+            Pickup: X
+
+            Delivery: Y
+
+    Also tolerates missing ** around "Machine N:", blank lines between rows,
+    bullets like '-' or '•' before Pickup/Delivery, and varying whitespace.
+    Returns list of dicts with keys: number, type, pickup, delivery.
     """
     machines = []
     if not desc:
         return machines
-    # Each machine: **Machine N:** type \n  - Pickup: X \n  - Delivery: Y
+
+    # Anchor on the MACHINES & LOCATIONS section if present. Otherwise scan
+    # the whole desc. Stop at the next major section header (DRIVING STOPS,
+    # QUOTE, FORMULA, etc.) or end of desc.
+    section = desc
+    anchor = re.search(r'MACHINES\s*&\s*LOCATIONS', desc, re.IGNORECASE)
+    if anchor:
+        start = anchor.end()
+        end_m = re.search(
+            r'\n\s*(?:#+\s*)?(?:\*+\s*)?(DRIVING\s*STOPS|QUOTE|FORMULA|BREAKDOWN|NOTES?|OTHER)',
+            desc[start:], re.IGNORECASE,
+        )
+        end = start + end_m.start() if end_m else len(desc)
+        section = desc[start:end]
+
+    # Flexible per-machine regex:
+    #   **Machine N:**  or  Machine N:
+    #   type on same line (may include **)
+    #   one or two newlines
+    #   optional bullet [-•*] and optional whitespace
+    #   Pickup: ...
+    #   one or two newlines
+    #   optional bullet
+    #   Delivery: ...
     pattern = re.compile(
-        r'\*\*Machine\s*(\d+):\*\*\s*(.+?)\n\s*-\s*Pickup:\s*(.+?)\n\s*-\s*Delivery:\s*(.+?)(?:\n|$)',
-        re.IGNORECASE
+        r'\*{0,2}\s*Machine\s*(\d+)\s*:?\s*\*{0,2}\s*([^\n]+?)\s*\*{0,2}\s*\n+'
+        r'\s*[-•*]?\s*Pickup\s*:\s*([^\n]+?)\s*\n+'
+        r'\s*[-•*]?\s*Delivery\s*:\s*([^\n]+)',
+        re.IGNORECASE,
     )
-    for m in pattern.finditer(desc):
+    for m in pattern.finditer(section):
+        type_text = m.group(2).strip().strip("*").strip()
+        pickup = m.group(3).strip().strip("*").strip()
+        delivery = m.group(4).strip().strip("*").strip()
+        # Skip empty/placeholder values
+        if not pickup or not delivery or pickup.lower() in ("n/a", "none") or delivery.lower() in ("n/a", "none"):
+            continue
         machines.append({
             "number": m.group(1).strip(),
-            "type": m.group(2).strip(),
-            "pickup": m.group(3).strip(),
-            "delivery": m.group(4).strip(),
+            "type": type_text,
+            "pickup": pickup,
+            "delivery": delivery,
         })
     return machines
 
