@@ -2025,21 +2025,9 @@ def generate_invoice_from_card(card_id, job_type_label, note_text, api_key, api_
     if not card_info:
         result["error"] = f"Could not fetch Trello card {card_id}."
         return result
-
-    # Need idBoard too — get_card_info only fetches name/desc/shortUrl
-    try:
-        full = requests.get(
-            f"https://api.trello.com/1/cards/{card_id}",
-            params={"key": api_key, "token": api_token, "fields": "name,desc,idBoard,shortUrl"},
-            timeout=30,
-        ).json()
-    except Exception as e:
-        result["error"] = f"Trello API error: {e}"
-        return result
-
-    card_name = full.get("name", "") or ""
-    card_desc = full.get("desc", "") or ""
-    card_short_url = full.get("shortUrl", "")
+    card_name = card_info.get("name", "") or ""
+    card_desc = card_info.get("desc", "") or ""
+    card_short_url = card_info.get("shortUrl", "")
 
     # --- 2. Parse card data ---
     bep_auth = extract_bep_auth_from_title(card_name)
@@ -2191,67 +2179,70 @@ def generate_invoice_from_card(card_id, job_type_label, note_text, api_key, api_
             n_machines = 4
             machines = machines[:4]
 
-    # --- 8. Fill cells ---
-    try:
-        header_updates = [
-            {"range": f"{tab_name}!L7", "values": [[f"INVOICE # {invoice_num}"]]},
-            {"range": f"{tab_name}!L5", "values": [[move_date_str]]},
-            {"range": f"{tab_name}!F7", "values": [[bep_auth or ""]]},
-            {"range": f"{tab_name}!C29", "values": [[note_text or ""]]},
-        ]
-        spreadsheet.values_batch_update({
-            "valueInputOption": "USER_ENTERED",
-            "data": header_updates,
-        })
-    except Exception as e:
-        result["warnings"].append(f"Header fill failed: {type(e).__name__}: {e}")
-
     # How many blocks exist after possible row insertion. Template always has 4
     # pre-drawn blocks; if we inserted extra rows, there are now (4 + extra_blocks)
     # block slots, with the final one (originally block 4) containing the J/K/L
     # totals formulas at row (24 + extra_blocks*4).
     total_blocks = 4 + extra_blocks
     final_block_row = 24 + extra_blocks * 4  # row where the totals formulas live
-
-    # Machine blocks — row of block i (1-indexed) = 12 + 4*(i-1)
-    for i, machine in enumerate(machines, start=1):
-        block_row = 12 + 4 * (i - 1)
-        try:
-            _fill_machine_block(new_ws, block_row, i, machine)
-        except Exception as e:
-            result["warnings"].append(f"Machine {i} fill failed: {type(e).__name__}: {e}")
-
-    # Clear leftover template data from unused blocks (when N < total_blocks).
-    # Don't touch rows in the final block's J/K/L columns — those hold formulas.
-    for i in range(len(machines) + 1, total_blocks + 1):
-        blank_row = 12 + 4 * (i - 1)
-        blank_updates = [
-            {"range": f"A{blank_row}", "values": [[""]]},
-            {"range": f"B{blank_row}", "values": [[""]]},
-            {"range": f"C{blank_row}", "values": [[""]]},
-            {"range": f"H{blank_row}", "values": [[""]]},
-            {"range": f"I{blank_row}", "values": [[""]]},
-            {"range": f"B{blank_row + 1}", "values": [[""]]},
-            {"range": f"C{blank_row + 1}", "values": [[""]]},
-            {"range": f"B{blank_row + 2}", "values": [[""]]},
-            {"range": f"C{blank_row + 2}", "values": [[""]]},
-        ]
-        try:
-            new_ws.batch_update(blank_updates, value_input_option="USER_ENTERED")
-        except Exception as e:
-            result["warnings"].append(f"Clear unused block {i} failed: {type(e).__name__}: {e}")
-
-    # Total hours — ALWAYS goes in J of the final block (where the L33/L25 formulas reference)
     hours_cell = f"J{final_block_row + 1}"
+
+    # --- 8. Consolidate ALL cell writes into ONE values.batchUpdate call ---
+    # Big speed win: instead of one API call per machine block (and per cleared
+    # block and per header field), batch everything into one network roundtrip.
+    def _r(cell):  # quote the tab name for safety with spaces/special chars
+        return f"'{tab_name}'!{cell}"
+
+    all_updates = [
+        # Header
+        {"range": _r("L7"), "values": [[f"INVOICE # {invoice_num}"]]},
+        {"range": _r("L5"), "values": [[move_date_str]]},
+        {"range": _r("F7"), "values": [[bep_auth or ""]]},
+        {"range": _r("C29"), "values": [[note_text or ""]]},
+    ]
+
+    # Machine blocks — fill 1..N
+    for i, machine in enumerate(machines, start=1):
+        r = 12 + 4 * (i - 1)
+        all_updates += [
+            {"range": _r(f"A{r}"), "values": [[f"{i}.0"]]},
+            {"range": _r(f"B{r}"), "values": [["Item(s) to be Moved:"]]},
+            {"range": _r(f"C{r}"), "values": [[machine.get("type", "")]]},
+            {"range": _r(f"H{r}"), "values": [["Qty"]]},
+            {"range": _r(f"I{r}"), "values": [["1.0"]]},
+            {"range": _r(f"B{r + 1}"), "values": [["Pick Up Site:"]]},
+            {"range": _r(f"C{r + 1}"), "values": [[machine.get("pickup", "")]]},
+            {"range": _r(f"B{r + 2}"), "values": [["Delivery Site:"]]},
+            {"range": _r(f"C{r + 2}"), "values": [[machine.get("delivery", "")]]},
+        ]
+
+    # Clear unused blocks (N+1..total_blocks). Don't touch J/K/L of final block.
+    for i in range(len(machines) + 1, total_blocks + 1):
+        r = 12 + 4 * (i - 1)
+        for coord in (f"A{r}", f"B{r}", f"C{r}", f"H{r}", f"I{r}",
+                      f"B{r + 1}", f"C{r + 1}", f"B{r + 2}", f"C{r + 2}"):
+            all_updates.append({"range": _r(coord), "values": [[""]]})
+
+    # Hours — always in J of the final block
+    if total_hours is not None:
+        all_updates.append({"range": _r(hours_cell), "values": [[total_hours]]})
+
+    try:
+        spreadsheet.values_batch_update({
+            "valueInputOption": "USER_ENTERED",
+            "data": all_updates,
+        })
+    except Exception as e:
+        result["warnings"].append(f"Sheet fill failed: {type(e).__name__}: {e}")
+
+    # Force 2-decimal display on hours cell (separate call — format API, not values API)
     if total_hours is not None:
         try:
-            new_ws.update(hours_cell, [[total_hours]], value_input_option="USER_ENTERED")
-            # Force 2-decimal display so 1.3 shows as "1.30"
             new_ws.format(hours_cell, {
                 "numberFormat": {"type": "NUMBER", "pattern": "0.00"}
             })
         except Exception as e:
-            result["warnings"].append(f"Hours fill failed: {type(e).__name__}: {e}")
+            result["warnings"].append(f"Hours format failed: {type(e).__name__}: {e}")
 
     # --- 9. Read computed total from L33 (Balance Due) ---
     try:
