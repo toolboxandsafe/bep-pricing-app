@@ -2067,7 +2067,9 @@ def generate_invoice_from_card(card_id, job_type_label, note_text, api_key, api_
             "Could not find a $ amount in card title. Hours cell will be blank — fill manually."
         )
     else:
-        total_hours = round(final_price / 170.0, 4)
+        # Round UP to the nearest hundredth so we always bill at least the quoted price
+        import math
+        total_hours = math.ceil((final_price / 170.0) * 100) / 100.0
 
     # --- 3. Move date ---
     move_date_iso = find_move_to_list_date(card_id, INVOICE_BEP_COMPLETED_LIST, api_key, api_token)
@@ -2264,7 +2266,9 @@ def generate_invoice_from_card(card_id, job_type_label, note_text, api_key, api_
     try:
         pdf_bytes = export_sheet_tab_as_pdf(INVOICE_SPREADSHEET_ID, new_ws.id, creds)
         result["pdf_bytes"] = pdf_bytes
-        result["pdf_filename"] = f"INV{invoice_num}.pdf"
+        # Filename mirrors the tab name — sanitize for filesystem safety
+        safe_pdf = re.sub(r'[\\/:*?"<>|]+', '_', tab_name).strip().strip('.')
+        result["pdf_filename"] = f"{safe_pdf or f'INV{invoice_num}'}.pdf"
     except Exception as e:
         result["warnings"].append(f"PDF export failed: {type(e).__name__}: {e}")
 
