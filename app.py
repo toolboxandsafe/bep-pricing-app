@@ -1826,21 +1826,47 @@ def parse_machines_from_card_desc(desc):
     #   one or two newlines
     #   optional bullet
     #   Delivery: ...
-    pattern = re.compile(
+    # --- Format 1: "Machine N: type / Pickup / Delivery" (current standard) ---
+    new_pattern = re.compile(
         r'\*{0,2}\s*Machine\s*(\d+)\s*:?\s*\*{0,2}\s*([^\n]+?)\s*\*{0,2}\s*\n+'
         r'\s*[-•*]?\s*Pickup\s*:\s*([^\n]+?)\s*\n+'
         r'\s*[-•*]?\s*Delivery\s*:\s*([^\n]+)',
         re.IGNORECASE,
     )
-    for m in pattern.finditer(section):
+    for m in new_pattern.finditer(section):
         type_text = m.group(2).strip().strip("*").strip()
         pickup = m.group(3).strip().strip("*").strip()
         delivery = m.group(4).strip().strip("*").strip()
-        # Skip empty/placeholder values
         if not pickup or not delivery or pickup.lower() in ("n/a", "none") or delivery.lower() in ("n/a", "none"):
             continue
         machines.append({
             "number": m.group(1).strip(),
+            "type": type_text,
+            "pickup": pickup,
+            "delivery": delivery,
+        })
+    if machines:
+        return machines
+
+    # --- Format 2: "Items to be Moved / Pick Up Site / Delivery Site" (old) ---
+    # Example:
+    #   Items to be Moved: USI Alpine 3000 frozen DE3000038 S#1423227 (1 machine)
+    #   Pick Up Site: ASPC Phoenix Aspen Unit, 2500 E Van Buren Street, PHX 85008
+    #   Delivery Site: BEP Maximus, 3425 E Van Buren Street #102, PHX 85008
+    old_pattern = re.compile(
+        r'\*{0,2}\s*Items?\s+to\s+be\s+Moved\s*:\s*\*{0,2}\s*([^\n]+?)\s*\n+'
+        r'\s*[-•*]?\s*Pick\s*[-]?\s*[Uu]p\s*Site\s*:\s*([^\n]+?)\s*\n+'
+        r'\s*[-•*]?\s*Delivery\s*Site\s*:\s*([^\n]+)',
+        re.IGNORECASE,
+    )
+    for i, m in enumerate(old_pattern.finditer(section), start=1):
+        type_text = m.group(1).strip().strip("*").strip()
+        pickup = m.group(2).strip().strip("*").strip()
+        delivery = m.group(3).strip().strip("*").strip()
+        if not pickup or not delivery or pickup.lower() in ("n/a", "none") or delivery.lower() in ("n/a", "none"):
+            continue
+        machines.append({
+            "number": str(i),
             "type": type_text,
             "pickup": pickup,
             "delivery": delivery,
