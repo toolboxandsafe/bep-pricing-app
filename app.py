@@ -2246,6 +2246,10 @@ def generate_invoice_from_card(card_id, job_type_label, note_text, api_key, api_
     if total_hours is not None:
         try:
             new_ws.update(hours_cell, [[total_hours]], value_input_option="USER_ENTERED")
+            # Force 2-decimal display so 1.3 shows as "1.30"
+            new_ws.format(hours_cell, {
+                "numberFormat": {"type": "NUMBER", "pattern": "0.00"}
+            })
         except Exception as e:
             result["warnings"].append(f"Hours fill failed: {type(e).__name__}: {e}")
 
