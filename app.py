@@ -1700,7 +1700,10 @@ def fill_worksheet_and_generate_pdf(excel_bytes, quote_amount, signature="Ryan K
 # INVOICE GENERATION (Google Sheets + Trello)
 # =============================================================================
 
-INVOICE_SPREADSHEET_ID = "1pUuWQbdStkjnm9V0KZf_B-B0jynZU3dmxgGsOQyRNas"
+INVOICE_SPREADSHEET_ID = os.environ.get(
+    "INVOICE_SPREADSHEET_ID",
+    "1UUqoUeX_3I4qzyTJt9tzdax2T7vUyVPydXWT58k1FS0",
+)
 INVOICE_TEMPLATE_TAB = "TEMPLATE"   # "Move Template"
 INVOICE_PENDING_TAB = "Pending Payments"
 INVOICE_BEP_COMPLETED_LIST = "BEP Completed"
