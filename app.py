@@ -1826,11 +1826,12 @@ def parse_machines_from_card_desc(desc):
     #   one or two newlines
     #   optional bullet
     #   Delivery: ...
-    # --- Format 1: "Machine N: type / Pickup / Delivery" (current standard) ---
+    # --- Format 1: "Machine N: type / Pick Up / Delivery" (current standard) ---
+    # Handles: **Machine 1:** type, **Pick Up:**, **Delivery:**, Pickup, Pick-Up, etc.
     new_pattern = re.compile(
-        r'\*{0,2}\s*Machine\s*(\d+)\s*:?\s*\*{0,2}\s*([^\n]+?)\s*\*{0,2}\s*\n+'
-        r'\s*[-•*]?\s*Pickup\s*:\s*([^\n]+?)\s*\n+'
-        r'\s*[-•*]?\s*Delivery\s*:\s*([^\n]+)',
+        r'\*{0,2}\s*Machine\s*(\d+)\s*:?\s*\*{0,2}\s*([^\n]+?)\s*\n+'
+        r'\s*\*{0,2}\s*[-•]?\s*Pick\s*[-_]?\s*Up\s*(?:Site)?\s*:\s*\*{0,2}\s*([^\n]+?)\s*\n+'
+        r'\s*\*{0,2}\s*[-•]?\s*Delivery\s*(?:Site)?\s*:\s*\*{0,2}\s*([^\n]+)',
         re.IGNORECASE,
     )
     for m in new_pattern.finditer(section):
