@@ -2847,12 +2847,21 @@ elif page == "📄 Generate INV":
 
     st.divider()
 
+    # A counter lets us reset the text inputs by forcing new widget keys on rerun.
+    if "inv_counter" not in st.session_state:
+        st.session_state["inv_counter"] = 0
+    inv_n = st.session_state["inv_counter"]
+
     card_input = st.text_input(
         "Trello Card URL or ID",
         placeholder="https://trello.com/c/ABC123 or card ID",
+        key=f"inv_card_input_{inv_n}",
     )
-    job_type = st.selectbox("Job Type", list(INVOICE_JOB_TYPES.keys()))
-    note_text = st.text_area("Note (optional — goes into C29)", value="", height=80)
+    job_type = st.selectbox("Job Type", list(INVOICE_JOB_TYPES.keys()), key=f"inv_job_type_{inv_n}")
+    note_text = st.text_area(
+        "Note (optional — goes into C29)", value="", height=80,
+        key=f"inv_note_{inv_n}",
+    )
 
     # Resolve card ID
     card_id_inv = None
@@ -2866,33 +2875,44 @@ elif page == "📄 Generate INV":
                 result = generate_invoice_from_card(
                     card_id_inv, job_type, note_text, trello_key, trello_token
                 )
+            # Persist so the result survives the next rerun until Clear is clicked
+            st.session_state["inv_result"] = result
 
-            if result.get("error"):
-                st.error(f"❌ {result['error']}")
-                if result.get("raw_desc"):
-                    with st.expander("🔍 Raw card description (debug)", expanded=False):
-                        st.code(result["raw_desc"], language="text")
-            else:
-                st.success(f"✅ Invoice **INV{result['invoice_number']}** generated!")
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    if result.get("sheet_url"):
-                        st.markdown(f"[📊 Open new sheet tab]({result['sheet_url']})")
-                    if result.get("total_amount") is not None:
-                        st.metric("Balance Due", f"${result['total_amount']:,.2f}")
-                with col_b:
-                    if result.get("pdf_bytes"):
-                        st.download_button(
-                            "⬇️ Download Invoice PDF",
-                            data=result["pdf_bytes"],
-                            file_name=result["pdf_filename"],
-                            mime="application/pdf",
-                            use_container_width=True,
-                        )
-                if result.get("warnings"):
-                    st.warning("Completed with warnings:")
-                    for w in result["warnings"]:
-                        st.caption(f"• {w}")
+    # Render the last result (if any) from session_state
+    result = st.session_state.get("inv_result")
+    if result:
+        if result.get("error"):
+            st.error(f"❌ {result['error']}")
+            if result.get("raw_desc"):
+                with st.expander("🔍 Raw card description (debug)", expanded=False):
+                    st.code(result["raw_desc"], language="text")
+        else:
+            st.success(f"✅ Invoice **INV{result['invoice_number']}** generated!")
+            col_a, col_b = st.columns(2)
+            with col_a:
+                if result.get("sheet_url"):
+                    st.markdown(f"[📊 Open new sheet tab]({result['sheet_url']})")
+                if result.get("total_amount") is not None:
+                    st.metric("Balance Due", f"${result['total_amount']:,.2f}")
+            with col_b:
+                if result.get("pdf_bytes"):
+                    st.download_button(
+                        "⬇️ Download Invoice PDF",
+                        data=result["pdf_bytes"],
+                        file_name=result["pdf_filename"],
+                        mime="application/pdf",
+                        use_container_width=True,
+                    )
+            if result.get("warnings"):
+                st.warning("Completed with warnings:")
+                for w in result["warnings"]:
+                    st.caption(f"• {w}")
+
+        st.divider()
+        if st.button("🧹 Generate Another Invoice", use_container_width=True):
+            st.session_state["inv_counter"] += 1
+            st.session_state.pop("inv_result", None)
+            st.rerun()
 
 # =============================================================================
 # PAGE 4: LEARNING DATA
