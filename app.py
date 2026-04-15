@@ -1629,11 +1629,24 @@ def download_attachment(url, api_key=None, api_token=None):
         return None
 
 def extract_quote_from_title(title):
-    """Extract quote amount from card title like 'Name - MR# - $325'"""
-    match = re.search(r'\$(\d+)', title)
-    if match:
-        return int(match.group(1))
-    return None
+    """
+    Extract quote amount from card title.
+    Handles:
+      - $325            -> 325
+      - $1,500          -> 1500 (comma-separated thousands)
+      - $325.50         -> 325 (rounds to int)
+      - $400 change to $500 -> 500 (takes the LAST $N, which is the final price)
+      - $xxx placeholder -> None
+    """
+    if not title:
+        return None
+    matches = re.findall(r'\$\s*([\d,]+(?:\.\d+)?)', str(title))
+    if not matches:
+        return None
+    try:
+        return int(float(matches[-1].replace(',', '')))
+    except (ValueError, TypeError):
+        return None
 
 def fill_worksheet_and_generate_pdf(excel_bytes, quote_amount, signature="Ryan Kearl"):
     """Fill Worksheet tab with hours and generate PDF"""
@@ -2725,13 +2738,18 @@ elif page == "📝 Generate Quote":
             elif not original_quote:
                 st.info("ℹ️ No original quote found - this card was created before the learning system")
             
+            # Clamp the auto-extracted price into the valid input range so
+            # a stray "$1" in a card title doesn't crash the widget.
+            safe_default = auto_quote if auto_quote else 300
+            safe_default = max(100, min(10000, safe_default))
+
             col1, col2 = st.columns(2)
             with col1:
                 quote_amount = st.number_input(
                     "Quote Amount ($)",
                     min_value=100,
                     max_value=10000,
-                    value=auto_quote or 300,
+                    value=safe_default,
                     step=25
                 )
             with col2:
