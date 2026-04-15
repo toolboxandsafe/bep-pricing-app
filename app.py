@@ -1630,21 +1630,46 @@ def download_attachment(url, api_key=None, api_token=None):
 
 def extract_quote_from_title(title):
     """
-    Extract quote amount from card title.
-    Handles:
-      - $325            -> 325
-      - $1,500          -> 1500 (comma-separated thousands)
-      - $325.50         -> 325 (rounds to int)
-      - $400 change to $500 -> 500 (takes the LAST $N, which is the final price)
-      - $xxx placeholder -> None
+    Extract the quote amount from a card title.
+
+    Rules (in priority order):
+      1. If there's an explicit "$X change to $Y" pattern, use Y — this
+         honors manual price adjustments in either direction.
+      2. Otherwise use the LARGEST $N in the title. This handles cards
+         that mention an incidental amount (e.g. "$1,100 - deposit $100")
+         without the extractor latching onto the smaller number.
+
+    Examples:
+      - $325                      -> 325
+      - $1,500                    -> 1500
+      - $1,100 - deposit $100     -> 1100 (max)
+      - $400 change to $500       -> 500  (change-to)
+      - $500 change to $400       -> 400  (change-to honors direction)
+      - $325.50                   -> 325
+      - $xxx or no price          -> None
     """
     if not title:
         return None
-    matches = re.findall(r'\$\s*([\d,]+(?:\.\d+)?)', str(title))
+    s = str(title)
+
+    # Priority 1: explicit "change to" pattern
+    change = re.search(
+        r'\$?\s*([\d,]+(?:\.\d+)?)\s*change\s*to\s*\$?\s*([\d,]+(?:\.\d+)?)',
+        s, re.IGNORECASE,
+    )
+    if change:
+        try:
+            return int(float(change.group(2).replace(',', '')))
+        except (ValueError, TypeError):
+            pass
+
+    # Priority 2: largest $-prefixed number anywhere in the title
+    matches = re.findall(r'\$\s*([\d,]+(?:\.\d+)?)', s)
     if not matches:
         return None
     try:
-        return int(float(matches[-1].replace(',', '')))
+        values = [float(m.replace(',', '')) for m in matches]
+        return int(max(values))
     except (ValueError, TypeError):
         return None
 
