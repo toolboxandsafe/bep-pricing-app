@@ -15,6 +15,19 @@ import imaplib
 import email
 from email.header import decode_header
 from datetime import datetime, timedelta
+try:
+    from zoneinfo import ZoneInfo
+    BEP_TZ = ZoneInfo("America/Phoenix")
+except Exception:
+    BEP_TZ = None
+
+def now_local():
+    """Current datetime in Arizona time. Railway runs in UTC; Arizona is UTC-7
+    year-round (no DST), so unadjusted now_local() shows tomorrow's date
+    in the evening. This helper avoids that."""
+    if BEP_TZ is not None:
+        return datetime.now(BEP_TZ).replace(tzinfo=None)
+    return now_local()
 import pandas as pd
 from io import BytesIO
 from fpdf import FPDF
@@ -118,7 +131,7 @@ def load_learning_data():
     # Return default structure
     return {
         "version": "1.0",
-        "created": datetime.now().isoformat(),
+        "created": now_local().isoformat(),
         "quotes": [],
         "location_stats": {},
         "total_quotes": 0,
@@ -129,7 +142,7 @@ def load_learning_data():
 def save_learning_data(data):
     """Save learning data to JSON file"""
     try:
-        data["updated"] = datetime.now().isoformat()
+        data["updated"] = now_local().isoformat()
         with open(LEARNING_DATA_FILE, 'w') as f:
             json.dump(data, f, indent=2)
         return True
@@ -145,7 +158,7 @@ def log_quote_feedback(original_quote, final_price, card_name, locations, commen
     
     # Create quote record
     quote_record = {
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": now_local().isoformat(),
         "card_name": card_name,
         "original_quote": original_quote,
         "final_price": final_price,
@@ -1628,7 +1641,7 @@ def fill_worksheet_and_generate_pdf(excel_bytes, quote_amount, signature="Ryan K
     
     # Calculate hours
     hours = round(quote_amount / HOURLY_RATE, 2)
-    today_date = datetime.now().strftime("%m/%d/%Y")
+    today_date = now_local().strftime("%m/%d/%Y")
     
     with tempfile.TemporaryDirectory() as tmpdir:
         # Save Excel
@@ -2065,10 +2078,10 @@ def generate_invoice_from_card(card_id, job_type_label, note_text, api_key, api_
         try:
             move_date = datetime.fromisoformat(move_date_iso.replace("Z", "+00:00"))
         except Exception:
-            move_date = datetime.now()
+            move_date = now_local()
             result["warnings"].append("Could not parse move-to-BEP-Completed date; using today.")
     else:
-        move_date = datetime.now()
+        move_date = now_local()
         result["warnings"].append(f"Card has no move-to-'{INVOICE_BEP_COMPLETED_LIST}' action; using today as move date.")
 
     move_date_str = _format_move_date(move_date)
@@ -2302,7 +2315,7 @@ def generate_invoice_from_card(card_id, job_type_label, note_text, api_key, api_
         pending_ws = spreadsheet.worksheet(INVOICE_PENDING_TAB)
         last_row = _col_last_data_row(pending_ws, col_index=1)
         append_row_index = last_row + 1
-        today_str = datetime.now().strftime("%m/%d/%Y")
+        today_str = now_local().strftime("%m/%d/%Y")
         row_values = [
             invoice_num,                                 # A Invoice
             today_str,                                   # B Date Sent
@@ -2576,7 +2589,7 @@ if page == "📧 From Email":
                                                     pdf = convert_excel_to_pdf(excel_bytes, st.session_state.get('email_excel_name', 'request.xlsx'))
                                                     if pdf:
                                                         pdf = remove_pdf_pages(pdf, [1])
-                                                        pdf_name = f"CAPTURE_{mr_number or 'BEP'}_{datetime.now().strftime('%Y%m%d')}.pdf"
+                                                        pdf_name = f"CAPTURE_{mr_number or 'BEP'}_{now_local().strftime('%Y%m%d')}.pdf"
                                                         attach_pdf_to_card(card_id, pdf, pdf_name, trello_key, trello_token)
                                                         st.success("✅ CAPTURE PDF attached")
                                                 
@@ -2992,7 +3005,7 @@ elif page == "📊 Learning Data":
     st.download_button(
         "⬇️ Download Learning Data (JSON)",
         data=json.dumps(data, indent=2),
-        file_name=f"learning_data_{datetime.now().strftime('%Y%m%d')}.json",
+        file_name=f"learning_data_{now_local().strftime('%Y%m%d')}.json",
         mime="application/json"
     )
     
@@ -3005,7 +3018,7 @@ elif page == "📊 Learning Data":
                 # Actually reset
                 save_learning_data({
                     "version": "1.0",
-                    "created": datetime.now().isoformat(),
+                    "created": now_local().isoformat(),
                     "quotes": [],
                     "location_stats": {},
                     "total_quotes": 0,
@@ -3199,7 +3212,7 @@ elif page == "📤 New Request":
                             st.download_button(
                                 "⬇️ Download CAPTURE PDF",
                                 data=st.session_state['request_pdf'],
-                                file_name=f"CAPTURE_{mr_number or 'BEP'}_{datetime.now().strftime('%Y%m%d')}.pdf",
+                                file_name=f"CAPTURE_{mr_number or 'BEP'}_{now_local().strftime('%Y%m%d')}.pdf",
                                 mime="application/pdf",
                                 use_container_width=True
                             )
@@ -3223,7 +3236,7 @@ elif page == "📤 New Request":
                                     # Attach PDF if available
                                     if 'request_pdf' in st.session_state:
                                         with st.spinner("Attaching CAPTURE PDF..."):
-                                            pdf_filename = f"CAPTURE_{mr_number or 'BEP'}_{datetime.now().strftime('%Y%m%d')}.pdf"
+                                            pdf_filename = f"CAPTURE_{mr_number or 'BEP'}_{now_local().strftime('%Y%m%d')}.pdf"
                                             if attach_pdf_to_card(card_id, st.session_state['request_pdf'], pdf_filename, trello_key, trello_token):
                                                 st.success("✅ CAPTURE PDF attached!")
                                             else:
