@@ -236,18 +236,28 @@ def extract_price_adjustment_from_title(title):
     - '$350 change to $400'
     - '$450 Ryan said $400'
     - '$300 -change to $350'
+    - '$1,400 change to $1,100'     (comma-separated thousands)
+    - '1400 change to 1,100'        ($ optional)
     Returns (original_price, final_price) or (None, None)
     """
     if not title:
         return None, None
-    
-    # Pattern: $XXX change to $YYY or $XXX Ryan said $YYY
-    match = re.search(r'\$(\d+)\s*(?:change to|-change to|Ryan said)\s*\$?(\d+)', title, re.IGNORECASE)
+
+    # Pattern: $?N (change to | -change to | Ryan said) $?M
+    # [\d,]+(?:\.\d+)? handles commas and decimals; $ is optional so titles
+    # without dollar signs still parse.
+    match = re.search(
+        r'\$?\s*([\d,]+(?:\.\d+)?)\s*(?:change\s*to|-change\s*to|Ryan\s*said)\s*\$?\s*([\d,]+(?:\.\d+)?)',
+        title, re.IGNORECASE,
+    )
     if match:
-        original = int(match.group(1))
-        final = int(match.group(2))
-        return original, final
-    
+        try:
+            original = int(float(match.group(1).replace(',', '')))
+            final = int(float(match.group(2).replace(',', '')))
+            return original, final
+        except (ValueError, TypeError):
+            return None, None
+
     return None, None
 
 def extract_price_adjustment_from_comments(comments):
@@ -2702,9 +2712,11 @@ elif page == "📝 Generate Quote":
         card_info = get_card_info(card_id, trello_key, trello_token)
         
         if card_info:
-            st.success(f"✅ Found card: **{card_info.get('name')}**")
-            
-            card_title = card_info.get('name', '')
+            card_title = card_info.get('name', '') or ''
+            # Escape $ signs so Streamlit's markdown LaTeX renderer doesn't
+            # eat the dollar signs in the title.
+            safe_card_title = card_title.replace('$', '\\$')
+            st.success(f"✅ Found card: **{safe_card_title}**")
             
             # FIRST: Check if title has adjustment pattern like "$350 change to $400"
             title_original, title_final = extract_price_adjustment_from_title(card_title)
