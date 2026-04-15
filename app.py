@@ -2186,6 +2186,11 @@ def generate_invoice_from_card(card_id, job_type_label, note_text, api_key, api_
     total_blocks = 4 + extra_blocks
     final_block_row = 24 + extra_blocks * 4  # row where the totals formulas live
     hours_cell = f"J{final_block_row + 1}"
+    # Rows below the insertion point (note label, thank you, signature, balance)
+    # all shift down by extra_blocks*4.
+    shift = extra_blocks * 4
+    note_cell = f"C{29 + shift}"
+    balance_cell = f"L{33 + shift}"
 
     # --- 8. Consolidate ALL cell writes into ONE values.batchUpdate call ---
     # Big speed win: instead of one API call per machine block (and per cleared
@@ -2198,7 +2203,7 @@ def generate_invoice_from_card(card_id, job_type_label, note_text, api_key, api_
         {"range": _r("L7"), "values": [[f"INVOICE # {invoice_num}"]]},
         {"range": _r("L5"), "values": [[move_date_str]]},
         {"range": _r("F7"), "values": [[bep_auth or ""]]},
-        {"range": _r("C29"), "values": [[note_text or ""]]},
+        {"range": _r(note_cell), "values": [[note_text or ""]]},
     ]
 
     # Machine blocks — fill 1..N
@@ -2244,9 +2249,10 @@ def generate_invoice_from_card(card_id, job_type_label, note_text, api_key, api_
         except Exception as e:
             result["warnings"].append(f"Hours format failed: {type(e).__name__}: {e}")
 
-    # --- 9. Read computed total from L33 (Balance Due) ---
+    # --- 9. Read computed total from the Balance Due cell ---
+    # For N > 4 the row has shifted down via insertDimension — use balance_cell.
     try:
-        balance_val = new_ws.acell("L33", value_render_option="UNFORMATTED_VALUE").value
+        balance_val = new_ws.acell(balance_cell, value_render_option="UNFORMATTED_VALUE").value
         if isinstance(balance_val, (int, float)):
             result["total_amount"] = float(balance_val)
         else:
