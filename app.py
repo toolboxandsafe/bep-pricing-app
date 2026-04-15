@@ -1640,9 +1640,9 @@ def fill_worksheet_and_generate_pdf(excel_bytes, quote_amount, signature="Ryan K
     import math
     import openpyxl
 
-    # Calculate hours — round UP to nearest tenth (e.g. 2.79411 -> 2.8).
+    # Calculate hours — round UP to nearest hundredth (e.g. 2.79411 -> 2.80).
     # Rounding up ensures we never under-bill the quoted price.
-    hours = math.ceil((quote_amount / HOURLY_RATE) * 10) / 10
+    hours = math.ceil((quote_amount / HOURLY_RATE) * 100) / 100
     today_date = now_local().strftime("%m/%d/%Y")
     
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -2737,11 +2737,11 @@ elif page == "📝 Generate Quote":
             with col2:
                 signature = st.text_input("Signature", value="Ryan Kearl")
             
-            # Show calculated hours — round UP to nearest tenth (matches the
-            # value written into the worksheet for the PDF).
+            # Show calculated hours — round UP to nearest hundredth (matches
+            # the value written into the worksheet for the PDF).
             import math
-            hours = math.ceil((quote_amount / HOURLY_RATE) * 10) / 10
-            st.info(f"**Calculated Hours:** {hours} hrs (${quote_amount} ÷ ${HOURLY_RATE})")
+            hours = math.ceil((quote_amount / HOURLY_RATE) * 100) / 100
+            st.info(f"**Calculated Hours:** {hours:.2f} hrs (${quote_amount} ÷ ${HOURLY_RATE})")
             
             # Fetch attachments
             attachments = get_card_attachments(card_id, trello_key, trello_token)
