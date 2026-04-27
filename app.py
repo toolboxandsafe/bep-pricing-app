@@ -1456,7 +1456,7 @@ def remove_pdf_pages(pdf_bytes, pages_to_remove=[1]):
 # TRELLO INTEGRATION
 # =============================================================================
 
-def create_trello_card(data, api_key, api_token, list_id):
+def create_trello_card(data, api_key, api_token, list_id, pos='top'):
     """Create Trello card with quote data"""
     
     # Build driving stops — prefer the optimized route sequence if present,
@@ -1552,7 +1552,7 @@ def create_trello_card(data, api_key, api_token, list_id):
         'idList': list_id,
         'name': title,
         'desc': desc,
-        'pos': 'top'
+        'pos': pos
     }
     
     response = requests.post(url, params=params)
@@ -2623,8 +2623,8 @@ if page == "📧 From Email":
                                             # Override title
                                             full_data['card_title'] = st.session_state.get('final_title', full_title)
                                             
-                                            card = create_trello_card(full_data, trello_key, trello_token, trello_list)
-                                            
+                                            card = create_trello_card(full_data, trello_key, trello_token, trello_list, pos='bottom')
+
                                             if card:
                                                 card_id = card.get('id')
                                                 st.success(f"✅ Card created!")
